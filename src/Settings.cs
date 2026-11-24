@@ -15,6 +15,12 @@ class PosMon
     public Color TextColor = Color.White;
     public HashSet<string> Hidden = new HashSet<string>();
 
+    public void CopiarAspecto(PosMon o)
+    {
+        Spacing = o.Spacing; TextSize = o.TextSize; IconSize = o.IconSize; ShowIcons = o.ShowIcons; ShowPercent = o.ShowPercent;
+        ColorByLevel = o.ColorByLevel; Animate = o.Animate; Hidden = new HashSet<string>(o.Hidden);
+    }
+
     public PosMon Copia()
     {
         var c = (PosMon)MemberwiseClone(); c.Hidden = new HashSet<string>(Hidden); c.OffsetX = 0; c.LeftSide = false; c.Locked = false; return c;
@@ -52,15 +58,15 @@ class PosMon
 
 static class Cfg
 {
-    public static int LowThreshold = 20, RefreshSeconds = 30;
-    public static bool Notifications = true;
+    public static int LowThreshold = 20, RefreshSeconds = 10;
+    public static bool Notifications = true, SyncMonitors = true;
     public static HashSet<string> Monitors = new HashSet<string>();   // monitor device names; empty = main monitor only
     public static Dictionary<string, PosMon> Pos = new Dictionary<string, PosMon>();
     static PosMon Base = new PosMon();   // template for monitors seen for the first time (also reads old single-monitor settings)
 
     public static PosMon PosDe(string monitor)
     {
-        PosMon p; if (!Pos.TryGetValue(monitor, out p)) { p = Base.Copia(); Pos[monitor] = p; }
+        PosMon p; if (!Pos.TryGetValue(monitor, out p)) { p = Base.Copia(); if (SyncMonitors && Pos.Count > 0) p.CopiarAspecto(Pos.Values.First()); Pos[monitor] = p; }
         return p;
     }
 
@@ -85,6 +91,7 @@ static class Cfg
                     case "LowThreshold": int.TryParse(v, out LowThreshold); break;
                     case "RefreshSeconds": int.TryParse(v, out RefreshSeconds); break;
                     case "Notifications": Notifications = v == "1"; break;
+                    case "SyncMonitors": SyncMonitors = v == "1"; break;
                     case "Monitors": Monitors = new HashSet<string>(v.Split('|').Where(x => x != "")); break;
                     default: Base.Set(k, v); break;
                 }
@@ -94,12 +101,21 @@ static class Cfg
         catch { }
     }
 
+    // delete every saved setting (positions, monitors, look); the app restarts afterwards
+    public static void FactoryReset()
+    {
+        try { if (File.Exists(FilePath)) File.Delete(FilePath); } catch { }
+        LowThreshold = 20; RefreshSeconds = 10; Notifications = true; SyncMonitors = true;
+        Monitors.Clear(); Pos.Clear(); Base = new PosMon();
+        SetStartWithWindows(true);
+    }
+
     public static void Save()
     {
         try
         {
             Directory.CreateDirectory(Dir);
-            var l = new List<string> { "LowThreshold=" + LowThreshold, "RefreshSeconds=" + RefreshSeconds, "Notifications=" + (Notifications ? 1 : 0), "Monitors=" + string.Join("|", Monitors) };
+            var l = new List<string> { "LowThreshold=" + LowThreshold, "RefreshSeconds=" + RefreshSeconds, "Notifications=" + (Notifications ? 1 : 0), "SyncMonitors=" + (SyncMonitors ? 1 : 0), "Monitors=" + string.Join("|", Monitors) };
             foreach (var kv in Pos) { l.Add(""); l.Add("[" + kv.Key + "]"); l.AddRange(kv.Value.Lineas()); }
             File.WriteAllLines(FilePath, l);
         }
@@ -132,7 +148,7 @@ class SettingsForm : Form
     {
         var pant = Screen.AllScreens.OrderBy(x => x.Bounds.Left).ToList();
         int nMon = pant.FindIndex(x => x.DeviceName == monitor) + 1;
-        Text = "Wireless Battery Tray - Settings (Monitor " + nMon + ")";
+        Text = "Wireless Battery Tray - Settings" + (Cfg.SyncMonitors ? "" : " (Monitor " + nMon + ")");
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen; AutoScaleMode = AutoScaleMode.Font;
         Font = new Font("Segoe UI", 9.5f); BackColor = Bg; ForeColor = Color.White;
@@ -144,7 +160,7 @@ class SettingsForm : Form
         tabla.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
         Controls.Add(tabla);
 
-        Seccion("Display - Monitor " + nMon);
+        Seccion(Cfg.SyncMonitors ? "Display" : "Display - Monitor " + nMon);
         var cIcons = Check("Show device icons", mc.ShowIcons);
         var cPct = Check("Show % sign", mc.ShowPercent);
         var cColor = Check("Red text when battery is low", mc.ColorByLevel);
@@ -161,6 +177,7 @@ class SettingsForm : Form
 
         Seccion("Monitors");
         var pantallas = Screen.AllScreens.OrderBy(x => x.Bounds.Left).ToList();
+        var cSync = Check("Same look on every monitor", Cfg.SyncMonitors);
         var checksMon = new List<Tuple<CheckBox, string>>();
         for (int i = 0; i < pantallas.Count; i++)
         {
@@ -168,6 +185,26 @@ class SettingsForm : Form
             bool marcado = Cfg.Monitors.Count == 0 ? sc.Primary : Cfg.Monitors.Contains(sc.DeviceName);
             checksMon.Add(Tuple.Create(Check("Monitor " + (i + 1) + (sc.Primary ? " (main)" : "") + "  -  " + sc.Bounds.Width + "x" + sc.Bounds.Height, marcado), sc.DeviceName));
         }
+
+        // at least one monitor must stay selected: the last checked one is shown grayed out and can't be unchecked
+        var aviso = new Label { Text = "It must be shown on at least one monitor.", AutoSize = true, ForeColor = Color.FromArgb(140, 140, 140), Font = new Font("Segoe UI", 8.5f, FontStyle.Italic), Margin = new Padding(20, 0, 0, 4) };
+        tabla.Controls.Add(aviso); tabla.SetColumnSpan(aviso, 2);
+        var tipMon = new ToolTip();
+        Action bloquearUltimo = () =>
+        {
+            int marcados = checksMon.Count(x => x.Item1.Checked);
+            foreach (var t in checksMon)
+            {
+                bool fijo = marcados == 1 && t.Item1.Checked;
+                t.Item1.AutoCheck = !fijo;
+                t.Item1.ForeColor = fijo ? Color.FromArgb(140, 140, 140) : Color.White;
+                t.Item1.Cursor = fijo ? Cursors.Default : Cursors.Hand;
+                tipMon.SetToolTip(t.Item1, fijo ? "It must be shown on at least one monitor." : null);
+            }
+            aviso.Visible = marcados == 1;
+        };
+        foreach (var t in checksMon) t.Item1.CheckedChanged += (s, e) => bloquearUltimo();
+        bloquearUltimo();
 
         var devs = devices.Concat(mc.Hidden).Distinct().ToList();
         var checksDev = new List<CheckBox>();
@@ -188,8 +225,9 @@ class SettingsForm : Form
         reset.Click += (s, e) =>
         {
             cIcons.Checked = cPct.Checked = cColor.Checked = cAnim.Checked = cNot.Checked = true;
-             nText.Value = 13; nIcon.Value = 16; nSpace.Value = 12; nLow.Value = 20; nRef.Value = 30;
+             nText.Value = 13; nIcon.Value = 16; nSpace.Value = 12; nLow.Value = 20; nRef.Value = 10;
             foreach (var c in checksDev) c.Checked = true;
+            cSync.Checked = true;
             foreach (var t in checksMon) t.Item1.Checked = Screen.AllScreens.First(x => x.DeviceName == t.Item2).Primary;
         };
         ok.Click += (s, e) =>
@@ -199,12 +237,11 @@ class SettingsForm : Form
             Cfg.LowThreshold = (int)nLow.Value; Cfg.RefreshSeconds = (int)nRef.Value;
             Cfg.Notifications = cNot.Checked; Cfg.SetStartWithWindows(cStart.Checked);
             mc.Hidden.Clear(); foreach (var c in checksDev) if (!c.Checked) mc.Hidden.Add(c.Text);
-            var monAntes = string.Join("|", Cfg.Monitors.OrderBy(x => x));
+            Cfg.SyncMonitors = cSync.Checked;
+            if (Cfg.SyncMonitors) foreach (var otro in Cfg.Pos.Values) if (otro != mc) otro.CopiarAspecto(mc);
             Cfg.Monitors = new HashSet<string>(checksMon.Where(t => t.Item1.Checked).Select(t => t.Item2));
             if (Cfg.Monitors.Count == 0) Cfg.Monitors.Add(Screen.PrimaryScreen.DeviceName);
-            bool reiniciar = monAntes != string.Join("|", Cfg.Monitors.OrderBy(x => x));
             Cfg.Save();
-            if (reiniciar) { Application.Restart(); return; }
             if (Applied != null) Applied();
             Close();
         };

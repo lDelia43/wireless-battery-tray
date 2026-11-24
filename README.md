@@ -34,6 +34,8 @@ Click the battery readout → **Settings…** to change:
 - **Behavior:** low-battery threshold, refresh interval, notifications, start with Windows.
 - **Devices:** hide any device you don't want to see.
 
+To start over, use **Restore factory settings…** in the menu (or uninstall and reinstall).
+
 Settings are saved to `%LOCALAPPDATA%\WirelessBatteryTray\settings.ini`, so you can also edit them by hand.
 
 ## Install

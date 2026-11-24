@@ -81,25 +81,43 @@ class Overlay : Form
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             AppDomain.CurrentDomain.UnhandledException += (s, e) => Fallo(e.ExceptionObject as Exception);
             Cfg.Load();
-            // one overlay per selected monitor's taskbar (main monitor if none selected)
+            // the main-taskbar overlay always exists (it reads the batteries); the rest are added/removed live
             var barras = Barras();
-            var elegidas = barras.Where(b => Cfg.Monitors.Count == 0 ? b.Item3 : Cfg.Monitors.Contains(b.Item2)).ToList();
-            if (elegidas.Count == 0) elegidas.Add(barras.First(b => b.Item3));
-            Overlay lector = null;
-            foreach (var b in elegidas)
-            {
-                var o = new Overlay(b.Item1, lector == null, b.Item3);
-                if (lector == null) lector = o; else o.Show();
-            }
+            var lector = new Overlay(barras.First(b => b.Item3).Item1, true, true);
+            lector.Shown += (s, e) => AplicarMonitores();
             Application.Run(lector);
         }
     }
 
+    static bool falloMostrado;
     static void Fallo(Exception ex)
     {
+        // show the error only once, then quit cleanly (a repeating timer could otherwise pop it up again and again)
+        if (falloMostrado) return; falloMostrado = true;
         try { MessageBox.Show("Wireless Battery Tray " + Version + " crashed:\n\n" + ex, "Wireless Battery Tray", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+        Environment.Exit(1);
     }
     static string Version { get { var n = System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath); return n.StartsWith("WirelessBatteryTray-") ? n.Substring(20) : n; } }
+
+    // create/remove overlays to match the monitors selected in Settings, without restarting
+    public static void AplicarMonitores()
+    {
+        var barras = Barras();
+        var elegidas = barras.Where(b => Cfg.Monitors.Count == 0 ? b.Item3 : Cfg.Monitors.Contains(b.Item2)).Select(b => b.Item1).ToList();
+        if (elegidas.Count == 0) elegidas.Add(barras.First(b => b.Item3).Item1);
+        var lector = todas[0];
+        lector.activo = elegidas.Contains(lector.barra);
+        foreach (var o in todas.Skip(1).ToList())
+            if (!elegidas.Contains(o.barra)) { todas.Remove(o); o.Close(); o.Dispose(); }
+        foreach (var b in barras)
+            if (elegidas.Contains(b.Item1) && !todas.Any(o => o.barra == b.Item1))
+            {
+                var o = new Overlay(b.Item1, false, b.Item3);
+                o.Show();
+                if (lector.ultimos.Count > 0) o.Mostrar(new List<Dispositivo>(lector.ultimos));
+            }
+        foreach (var o in todas) { o.oculto = !o.oculto; }   // force the visibility check to re-apply
+    }
 
     // taskbars: (handle, monitor device name, is main taskbar)
     public static List<Tuple<IntPtr, string, bool>> Barras()
@@ -145,30 +163,37 @@ class Overlay : Form
         inicio.Click += (s, e) => Cfg.SetStartWithWindows(inicio.Checked);
         menu.Items.Add(inicio);
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Restore factory settings...", null, (s, e) =>
+        {
+            if (MessageBox.Show("Restore all settings to their defaults?\n\nPositions, monitors, sizes and hidden devices will be reset.", "Wireless Battery Tray", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            Cfg.FactoryReset();
+            Application.Restart();
+        });
         menu.Items.Add("Exit", null, (s, e) => { aviso.Dispose(); Application.Exit(); });
         menu.Opening += (s, e) => { inicio.Checked = Cfg.StartWithWindows; bloqueo.Text = pos.Locked ? "Unlock position" : "Lock position"; lado.Text = pos.LeftSide ? "Move to right side" : "Move to left side"; };
         menu.Closed += (s, e) => { abierto = false; menuCerrado = DateTime.Now; Dibujar(); };
-        cierreMenu = new System.Windows.Forms.Timer { Interval = 30 };
+        cierreMenu = new System.Windows.Forms.Timer { Interval = 30 }; relojes.Add(cierreMenu);
         cierreMenu.Tick += (s, e) => VigilarClicFuera();
 
-        var anim = new System.Windows.Forms.Timer { Interval = 60 };
-        anim.Tick += (s, e) => { foreach (var f in filas.Values) if (f.Mostrado >= 0 && f.Mostrado != f.Objetivo) { f.Mostrado += Math.Sign(f.Objetivo - f.Mostrado); Pintar(f); } };
+        var anim = new System.Windows.Forms.Timer { Interval = 60 }; relojes.Add(anim);
+        anim.Tick += (s, e) => { if (IsDisposed) return; foreach (var f in filas.Values) if (f.Mostrado >= 0 && f.Mostrado != f.Objetivo) { f.Mostrado += Math.Sign(f.Objetivo - f.Mostrado); Pintar(f); } };
         anim.Start();
 
         // revisa cada 50 ms si la barra quedo encima; solo en ese caso vuelve a subir (sin redibujar de mas)
-        var top = new System.Windows.Forms.Timer { Interval = 50 };
+        var top = new System.Windows.Forms.Timer { Interval = 50 }; relojes.Add(top);
         top.Tick += (s, e) =>
         {
+            if (IsDisposed || !IsHandleCreated) return;
             Duenio();
-            bool tapada = BarraOculta();
+            bool tapada = !activo || BarraOculta();
             if (tapada != oculto) { oculto = tapada; ShowWindow(Handle, tapada ? 0 : 8); if (!tapada) { Posicionar(); Dibujar(); } }   // SW_HIDE / SW_SHOWNA
             if (!oculto && BarraEncima()) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
         };
         top.Start();
 
-        refresco = new System.Windows.Forms.Timer { Interval = Cfg.RefreshSeconds * 1000 };
+        refresco = new System.Windows.Forms.Timer { Interval = Cfg.RefreshSeconds * 1000 }; relojes.Add(refresco);
         refresco.Tick += (s, e) => Consultar();
-        if (principal) refresco.Start();
+        if (principal) { refresco.Start(); EscucharGHub(); VigilarActualizacion(); }
 
         MouseEnter += (s, e) => { hover = true; Dibujar(); };
         MouseLeave += (s, e) => { hover = false; Dibujar(); };
@@ -198,7 +223,9 @@ class Overlay : Form
     }
     protected override bool ShowWithoutActivation { get { return true; } }
 
-    bool oculto;
+    bool oculto, activo = true;
+    readonly List<System.Windows.Forms.Timer> relojes = new List<System.Windows.Forms.Timer>();
+    protected override void OnFormClosed(FormClosedEventArgs e) { foreach (var t in relojes) { t.Stop(); t.Dispose(); } base.OnFormClosed(e); }
 
     // hide while the taskbar can't be seen: a full-screen app on this monitor, or an auto-hidden taskbar
     bool BarraOculta()
@@ -302,6 +329,77 @@ class Overlay : Form
     }
 
     // ---- G HUB: websocket local en ws://localhost:9010 ----
+    // the installer writes the new exe name to current.txt; if it isn't us, start it (it closes this one)
+    void VigilarActualizacion()
+    {
+        string dir = System.IO.Path.GetDirectoryName(Application.ExecutablePath);
+        string yo = System.IO.Path.GetFileName(Application.ExecutablePath);
+        var t = new System.Windows.Forms.Timer { Interval = 3000 };
+        t.Tick += (s, e) =>
+        {
+            try
+            {
+                string f = System.IO.Path.Combine(dir, "current.txt");
+                if (!System.IO.File.Exists(f)) return;
+                string actual = System.IO.File.ReadAllText(f).Trim();
+                if (actual == "" || string.Equals(actual, yo, StringComparison.OrdinalIgnoreCase)) return;
+                string ruta = System.IO.Path.Combine(dir, actual);
+                if (!System.IO.File.Exists(ruta)) return;
+                t.Stop();
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(ruta) { UseShellExecute = true, WorkingDirectory = dir });
+            }
+            catch { }
+        };
+        t.Start();
+    }
+
+    // G HUB pushes events when a device connects/disconnects or its battery changes: refresh right away
+    void EscucharGHub()
+    {
+        var hilo = new Thread(() =>
+        {
+            var js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            while (!IsDisposed)
+            {
+                try
+                {
+                    using (var ws = new ClientWebSocket())
+                    {
+                        ws.Options.AddSubProtocol("json");
+                        ws.Options.SetRequestHeader("Origin", "file://");
+                        if (!ws.ConnectAsync(new Uri("ws://localhost:9010"), CancellationToken.None).Wait(3000)) { Thread.Sleep(15000); continue; }
+                        foreach (var path in new[] { "/devices/state/changed", "/battery/state/changed", "/devices/list/changed" })
+                        {
+                            var req = Encoding.UTF8.GetBytes(js.Serialize(new { msgId = "", verb = "SUBSCRIBE", path = path }));
+                            ws.SendAsync(new ArraySegment<byte>(req), WebSocketMessageType.Text, true, CancellationToken.None).Wait(3000);
+                        }
+                        var buf = new byte[65536];
+                        while (ws.State == WebSocketState.Open && !IsDisposed)
+                        {
+                            var ms = new System.IO.MemoryStream(); WebSocketReceiveResult r;
+                            do { r = ws.ReceiveAsync(new ArraySegment<byte>(buf), CancellationToken.None).Result; ms.Write(buf, 0, r.Count); } while (!r.EndOfMessage);
+                            if (r.MessageType == WebSocketMessageType.Close) break;
+                            string txt = Encoding.UTF8.GetString(ms.ToArray());
+                            if (txt.Contains("changed") || txt.Contains("\"verb\":\"EVENT\""))
+                                try { BeginInvoke(new Action(ConsultarPronto)); } catch { }
+                        }
+                    }
+                }
+                catch { }
+                Thread.Sleep(5000);
+            }
+        }) { IsBackground = true };
+        hilo.Start();
+    }
+
+    // several events can arrive together, and G HUB may need a moment to report the new level
+    System.Windows.Forms.Timer pronto;
+    void ConsultarPronto()
+    {
+        if (pronto == null) { pronto = new System.Windows.Forms.Timer { Interval = 1500 }; pronto.Tick += (s, e) => { pronto.Stop(); Consultar(); }; }
+        pronto.Stop(); pronto.Start();
+    }
+
     static List<Dispositivo> LeerGHub()
     {
         var res = new List<Dispositivo>();
@@ -544,7 +642,7 @@ class Overlay : Form
     {
         if (ajustes != null && !ajustes.IsDisposed) { ajustes.Activate(); return; }
         ajustes = new SettingsForm(todas[0].ultimos.Select(d => d.Nombre).Where(n => n != "Open G HUB"), pos, Screen.FromHandle(barra).DeviceName);
-        ajustes.Applied += () => { todas[0].refresco.Interval = Cfg.RefreshSeconds * 1000; foreach (var o in todas) o.Mostrar(new List<Dispositivo>(todas[0].ultimos)); };
+        ajustes.Applied += () => { todas[0].refresco.Interval = Cfg.RefreshSeconds * 1000; AplicarMonitores(); foreach (var o in todas) o.Mostrar(new List<Dispositivo>(todas[0].ultimos)); };
         ajustes.Show();
     }
     void Reajustar()
