@@ -51,6 +51,7 @@ class Overlay : Form
     [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
     struct POINT { public int x, y; } struct SIZE { public int cx, cy; }
     [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte op, flags, alpha, format; }
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     struct RECT { public int Left, Top, Right, Bottom; }
 
     static readonly Color Fondo = Color.FromArgb(28, 28, 28);
@@ -97,7 +98,9 @@ class Overlay : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (s, e) => { aviso.Dispose(); Application.Exit(); });
         menu.Opening += (s, e) => inicio.Checked = Cfg.StartWithWindows;
-        menu.Closed += (s, e) => { abierto = false; Dibujar(); };
+        menu.Closed += (s, e) => { abierto = false; menuCerrado = DateTime.Now; Dibujar(); };
+        cierreMenu = new System.Windows.Forms.Timer { Interval = 30 };
+        cierreMenu.Tick += (s, e) => VigilarClicFuera();
         ContextMenuStrip = menu;
 
         var anim = new System.Windows.Forms.Timer { Interval = 60 };
@@ -117,7 +120,7 @@ class Overlay : Form
         MouseLeave += (s, e) => { hover = false; Dibujar(); };
         Cursor = Cursors.Hand;
         MouseDown += (s, e) => { presionado = true; Dibujar(); };
-        MouseUp += (s, e) => { presionado = false; AbrirMenu(); };
+        MouseUp += (s, e) => { presionado = false; if (menu.Visible || (DateTime.Now - menuCerrado).TotalMilliseconds < 200) { menu.Close(); Dibujar(); } else AbrirMenu(); };
         Shown += (s, e) => { Duenio(); Consultar(); };
     }
 
@@ -378,13 +381,24 @@ class Overlay : Form
         p.CloseFigure(); return p;
     }
 
-    int altoBarra = 48; bool hover, presionado, abierto;
+    int altoBarra = 48; bool hover, presionado, abierto; DateTime menuCerrado;
 
     void AbrirMenu()
     {
         abierto = true; Dibujar();
         // open the menu above the button, aligned to its right edge, like the system tray flyouts
+        SetForegroundWindow(Handle);
         menu.Show(this, new Point(Width - menu.PreferredSize.Width, -menu.PreferredSize.Height - 6));
+        cierreMenu.Start();
+    }
+
+    // closes the menu when the user clicks anywhere outside it (the window never takes focus, so Windows won't do it for us)
+    System.Windows.Forms.Timer cierreMenu;
+    void VigilarClicFuera()
+    {
+        if (!menu.Visible) { cierreMenu.Stop(); return; }
+        if (Control.MouseButtons != MouseButtons.None && !menu.Bounds.Contains(Cursor.Position) && !Bounds.Contains(Cursor.Position))
+        { menu.Close(ToolStripDropDownCloseReason.AppClicked); cierreMenu.Stop(); }
     }
 
     void AbrirAjustes()
