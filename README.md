@@ -1,0 +1,57 @@
+# Battery Tray
+
+Shows the battery level of your wireless peripherals right on the Windows taskbar, next to the system icons:
+
+```
+🎧 90%   🖱️ 72%   ^   ENG   📶 🔊   14:10
+```
+
+## Supported devices
+
+| Source | Devices | Requirement |
+|---|---|---|
+| **Logitech G HUB** | Mice, headsets, keyboards (e.g. PRO X Superlight, A50 X, G915) | G HUB running |
+| **Corsair iCUE** | Wireless headsets, mice, keyboards | iCUE running with *Enable SDK* turned on, plus the iCUE SDK DLL (see below) |
+| **HyperX Cloud II Wireless** | Headset (read directly over USB, experimental) | — |
+| **Xbox controllers** | Full / Medium / Low / Empty | Connected wirelessly |
+| **Generic Bluetooth** | Any device whose battery shows up in *Settings → Bluetooth & devices* | — |
+
+## Features
+
+- Device-type icon (mouse, headset, keyboard, controller) and percentage, vertically centered on the taskbar.
+- Turns red and shows a notification below 20%.
+- Numbers count smoothly when the level changes.
+- Hover to highlight it like a taskbar button; left-click to refresh, right-click for *Refresh now* / *Exit*.
+- Starts with Windows. Uses ~20 MB of RAM and ~0% CPU.
+
+## Install
+
+1. Download `BatteryTray-Setup.exe` from [Releases](../../releases/latest).
+2. Run it. The installer isn't code-signed, so SmartScreen will warn you: **More info → Run anyway**.
+
+No admin rights needed. Uninstall from *Settings → Apps*.
+
+### Corsair support
+
+Corsair support uses the official iCUE SDK, which is not redistributed here. To enable it, download `iCUESDK.x64_2019.dll` from [CorsairOfficial/cue-sdk](https://github.com/CorsairOfficial/cue-sdk/releases) (`redist/x64` folder) and copy it to `%LOCALAPPDATA%\BateriaEnBandeja\`.
+
+## Build
+
+Requires .NET Framework 4.5+ (included with Windows 10/11) and [NSIS](https://nsis.sourceforge.io/) for the installer.
+
+```bat
+csc /target:winexe /platform:x64 /out:installer\BateriaEnBandeja-1.0.0.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll src\*.cs
+makensis /DVERSION=1.0.0 installer\setup.nsi
+```
+
+On Linux, `mcs -sdk:4.5` and `makensis` work the same way.
+
+## Limitations
+
+- Windows 10/11, 64-bit.
+- Windows doesn't allow third-party items inside the taskbar, so this is a transparent always-on-top window positioned over it.
+- HyperX support is experimental. If your headset doesn't show up, open an issue with the exact model.
+
+## License
+
+MIT
