@@ -1,4 +1,4 @@
-// Battery Tray - shows wireless peripheral battery levels on the Windows taskbar
+// Wireless Battery Tray - shows wireless peripheral battery levels on the Windows taskbar
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -17,7 +17,11 @@ class Fila { public string Nombre, Glifo, Etiqueta; public int Mostrado, Objetiv
 
 class Overlay : Form
 {
-    const int UmbralAviso = 20, BajarPx = 0, SeparacionPx = 6, RefrescoSeg = 30;
+    const int SeparacionPx = 6;
+    static int UmbralAviso { get { return Cfg.LowThreshold; } }
+    List<Dispositivo> ultimos = new List<Dispositivo>();
+    System.Windows.Forms.Timer refresco;
+    SettingsForm ajustes;
 
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] static extern IntPtr FindWindow(string c, string n);
@@ -82,8 +86,18 @@ class Overlay : Form
         MinimumSize = new Size(1, 1); Size = new Size(1, 1);
         
 
+        Cfg.Load();
+        menu.Renderer = new ToolStripProfessionalRenderer(new MenuColores());
+        menu.ForeColor = Color.White; menu.ShowImageMargin = false; menu.Font = new Font("Segoe UI", 9.5f);
         menu.Items.Add("Refresh now", null, (s, e) => Consultar());
+        menu.Items.Add("Settings...", null, (s, e) => AbrirAjustes());
+        var inicio = new ToolStripMenuItem("Start with Windows") { CheckOnClick = true };
+        inicio.Click += (s, e) => Cfg.SetStartWithWindows(inicio.Checked);
+        menu.Items.Add(inicio);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (s, e) => { aviso.Dispose(); Application.Exit(); });
+        menu.Opening += (s, e) => inicio.Checked = Cfg.StartWithWindows;
+        menu.Closed += (s, e) => { abierto = false; Dibujar(); };
         ContextMenuStrip = menu;
 
         var anim = new System.Windows.Forms.Timer { Interval = 60 };
@@ -95,13 +109,15 @@ class Overlay : Form
         top.Tick += (s, e) => { Duenio(); if (BarraEncima()) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013); };
         top.Start();
 
-        var refresco = new System.Windows.Forms.Timer { Interval = RefrescoSeg * 1000 };
+        refresco = new System.Windows.Forms.Timer { Interval = Cfg.RefreshSeconds * 1000 };
         refresco.Tick += (s, e) => Consultar();
         refresco.Start();
 
         MouseEnter += (s, e) => { hover = true; Dibujar(); };
         MouseLeave += (s, e) => { hover = false; Dibujar(); };
-        MouseUp += (s, e) => { if (e.Button == MouseButtons.Left) Consultar(); };
+        Cursor = Cursors.Hand;
+        MouseDown += (s, e) => { presionado = true; Dibujar(); };
+        MouseUp += (s, e) => { presionado = false; AbrirMenu(); };
         Shown += (s, e) => { Duenio(); Consultar(); };
     }
 
@@ -260,10 +276,12 @@ class Overlay : Form
     }
 
     static Color ColorNivel(int n)
-    { return n < 0 ? Color.Gray : n <= UmbralAviso ? Color.FromArgb(255, 90, 90) : Color.White; }
+    { return n < 0 ? Color.Gray : (Cfg.ColorByLevel && n <= UmbralAviso) ? Color.FromArgb(255, 90, 90) : Cfg.TextColor; }
 
     void Mostrar(List<Dispositivo> datos)
     {
+        ultimos = new List<Dispositivo>(datos);
+        datos = datos.Where(d => !Cfg.Hidden.Contains(d.Nombre)).ToList();
         if (datos.Count == 0) datos.Add(new Dispositivo { Nombre = "Open G HUB", Tipo = "", Nivel = -1 });
         foreach (var n in filas.Keys.ToList())
             if (!datos.Any(d => d.Nombre == n)) { orden.Remove(filas[n]); filas.Remove(n); }
@@ -276,10 +294,10 @@ class Overlay : Form
                 filas[d.Nombre] = f; orden.Add(f);
             }
             f.Objetivo = d.Nivel; f.Etiqueta = d.Etiqueta;
-            if (d.Nivel < 0 || f.Mostrado < 0 || d.Etiqueta != null) f.Mostrado = d.Nivel;
+            if (d.Nivel < 0 || f.Mostrado < 0 || d.Etiqueta != null || !Cfg.Animate) f.Mostrado = d.Nivel;
 
             bool ya; avisado.TryGetValue(d.Nombre, out ya);
-            if (d.Nivel >= 0 && d.Nivel <= UmbralAviso && !ya)
+            if (Cfg.Notifications && d.Nivel >= 0 && d.Nivel <= UmbralAviso && !ya)
             {
                 aviso.Visible = true;
                 aviso.ShowBalloonTip(8000, "Low battery", d.Nombre + (d.Etiqueta != null ? " battery is " + d.Etiqueta.ToLower() : " is at " + d.Nivel + "%") + ". Time to charge it!", ToolTipIcon.Warning);
@@ -294,8 +312,9 @@ class Overlay : Form
     void Pintar(Fila f) { Reajustar(); }
 
     // ---- dibujo: cada simbolo y numero se centra por su contorno real ----
-    const float TamIcono = 20f, TamTexto = 16f, EspacioIconoTexto = 7f, EspacioEntre = 18f, MargenDer = 4f, PadIzq = 8f, PadDer = 8f;
-    static string TextoDe(Fila f) { return f.Etiqueta ?? (f.Mostrado < 0 ? "--" : f.Mostrado + "%"); }
+    static float TamIcono { get { return Cfg.IconSize; } } static float TamTexto { get { return Cfg.TextSize; } } static float EspacioEntre { get { return Cfg.Spacing; } }
+    const float EspacioIconoTexto = 7f, PadIzq = 8f, PadDer = 8f;
+    static string TextoDe(Fila f) { return f.Etiqueta ?? (f.Mostrado < 0 ? "--" : f.Mostrado + (Cfg.ShowPercent ? "%" : "")); }
 
     static System.Drawing.Drawing2D.GraphicsPath Ruta(string txt, string fuente, float px)
     {
@@ -309,7 +328,7 @@ class Overlay : Form
         float w = 0;
         foreach (var f in orden)
         {
-            using (var pi = Ruta(f.Glifo, fuenteIconos, TamIcono)) w += pi.GetBounds().Width + EspacioIconoTexto;
+            if (Cfg.ShowIcons) using (var pi = Ruta(f.Glifo, fuenteIconos, TamIcono)) w += pi.GetBounds().Width + EspacioIconoTexto;
             using (var pt = Ruta(TextoDe(f), "Segoe UI", TamTexto)) w += pt.GetBounds().Width + EspacioEntre;
         }
         return Math.Max(1, w - EspacioEntre + PadIzq + PadDer);
@@ -324,7 +343,7 @@ class Overlay : Form
             {
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                 // fondo casi invisible (alfa 1) para que toda la zona reciba clics; al pasar el mouse, resaltado tipo boton
-                var fondo = hover ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(1, 0, 0, 0);
+                var fondo = (presionado || abierto) ? Color.FromArgb(18, 255, 255, 255) : hover ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(1, 0, 0, 0);
                 using (var br = new SolidBrush(fondo))
                 using (var path = Redondeado(new RectangleF(0, 4, Width - 1, Height - 9), 5))
                     g.FillPath(br, path);
@@ -332,7 +351,7 @@ class Overlay : Form
                 foreach (var f in orden)
                 using (var br = new SolidBrush(ColorNivel(f.Mostrado)))
                 {
-                    foreach (var par in new[] { Tuple.Create(f.Glifo, fuenteIconos, TamIcono, EspacioIconoTexto), Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre) })
+                    foreach (var par in (Cfg.ShowIcons ? new[] { Tuple.Create(f.Glifo, fuenteIconos, TamIcono, EspacioIconoTexto) } : new Tuple<string, string, float, float>[0]).Concat(new[] { Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre) }))
                     using (var p = Ruta(par.Item1, par.Item2, par.Item3))
                     {
                         var bb = p.GetBounds();
@@ -359,7 +378,22 @@ class Overlay : Form
         p.CloseFigure(); return p;
     }
 
-    int altoBarra = 48; bool hover;
+    int altoBarra = 48; bool hover, presionado, abierto;
+
+    void AbrirMenu()
+    {
+        abierto = true; Dibujar();
+        // open the menu above the button, aligned to its right edge, like the system tray flyouts
+        menu.Show(this, new Point(Width - menu.PreferredSize.Width, -menu.PreferredSize.Height - 6));
+    }
+
+    void AbrirAjustes()
+    {
+        if (ajustes != null && !ajustes.IsDisposed) { ajustes.Activate(); return; }
+        ajustes = new SettingsForm(ultimos.Select(d => d.Nombre).Where(n => n != "Open G HUB"));
+        ajustes.Applied += () => { refresco.Interval = Cfg.RefreshSeconds * 1000; Mostrar(new List<Dispositivo>(ultimos)); };
+        ajustes.Show();
+    }
     void Reajustar()
     {
         RECT r; var tb = FindWindow("Shell_TrayWnd", null);
@@ -378,6 +412,22 @@ class Overlay : Form
         int trayLeft = r.Right - 330;
         var tn = FindWindowEx(tb, IntPtr.Zero, "TrayNotifyWnd", null);
         if (tn != IntPtr.Zero && GetWindowRect(tn, out rn) && rn.Left > r.Left) trayLeft = rn.Left;
-        Location = new Point(trayLeft - Width - SeparacionPx, r.Top + (r.Bottom - r.Top - Height) / 2 + BajarPx);
+        Location = new Point(trayLeft - Width - SeparacionPx - Cfg.OffsetX, r.Top + (r.Bottom - r.Top - Height) / 2 + Cfg.OffsetY);
     }
+}
+
+class MenuColores : ProfessionalColorTable
+{
+    static readonly Color Bg = Color.FromArgb(44, 44, 44), Sel = Color.FromArgb(62, 62, 62);
+    public override Color ToolStripDropDownBackground { get { return Bg; } }
+    public override Color MenuBorder { get { return Color.FromArgb(70, 70, 70); } }
+    public override Color MenuItemSelected { get { return Sel; } }
+    public override Color MenuItemBorder { get { return Sel; } }
+    public override Color MenuItemSelectedGradientBegin { get { return Sel; } }
+    public override Color MenuItemSelectedGradientEnd { get { return Sel; } }
+    public override Color SeparatorDark { get { return Color.FromArgb(70, 70, 70); } }
+    public override Color SeparatorLight { get { return Bg; } }
+    public override Color CheckBackground { get { return Sel; } }
+    public override Color CheckSelectedBackground { get { return Sel; } }
+    public override Color CheckPressedBackground { get { return Sel; } }
 }

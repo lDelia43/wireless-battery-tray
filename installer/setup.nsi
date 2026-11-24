@@ -1,6 +1,6 @@
 Unicode true
-Name "Battery Tray"
-OutFile "BatteryTray-Setup.exe"
+Name "Wireless Battery Tray"
+OutFile "WirelessBatteryTray-Setup.exe"
 InstallDir "$LOCALAPPDATA\BateriaEnBandeja"
 RequestExecutionLevel user
 !ifndef VERSION
@@ -26,11 +26,11 @@ Section "Instalar"
   File /nonfatal "iCUESDK.x64_2019.dll"
   SetOverwrite on
   WriteUninstaller "$INSTDIR\Desinstalar.exe"
-  CreateShortcut "$SMSTARTUP\Battery Tray.lnk" "$INSTDIR\${EXE}"
-  CreateDirectory "$SMPROGRAMS\Battery Tray"
-  CreateShortcut "$SMPROGRAMS\Battery Tray\Battery Tray.lnk" "$INSTDIR\${EXE}"
-  CreateShortcut "$SMPROGRAMS\Battery Tray\Uninstall.lnk" "$INSTDIR\Desinstalar.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "DisplayName" "Battery Tray"
+  CreateShortcut "$SMSTARTUP\Wireless Battery Tray.lnk" "$INSTDIR\${EXE}"
+  CreateDirectory "$SMPROGRAMS\Wireless Battery Tray"
+  CreateShortcut "$SMPROGRAMS\Wireless Battery Tray\Wireless Battery Tray.lnk" "$INSTDIR\${EXE}"
+  CreateShortcut "$SMPROGRAMS\Wireless Battery Tray\Uninstall.lnk" "$INSTDIR\Desinstalar.exe"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "DisplayName" "Wireless Battery Tray"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "DisplayIcon" "$INSTDIR\${EXE}"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "UninstallString" '"$INSTDIR\Desinstalar.exe"'
   ; the new instance closes the old one on startup
@@ -53,8 +53,8 @@ SectionEnd
 Section "Uninstall"
   nsExec::Exec 'powershell -NoProfile -Command "Get-Process BateriaEnBandeja* | Stop-Process -Force"'
   Sleep 1000
-  Delete "$SMSTARTUP\Battery Tray.lnk"
-  RMDir /r "$SMPROGRAMS\Battery Tray"
+  Delete "$SMSTARTUP\Wireless Battery Tray.lnk"
+  RMDir /r "$SMPROGRAMS\Wireless Battery Tray"
   RMDir /r "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja"
 SectionEnd

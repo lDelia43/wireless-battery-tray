@@ -1,4 +1,4 @@
-# Battery Tray
+# Wireless Battery Tray
 
 Shows the battery level of your wireless peripherals right on the Windows taskbar, next to the system icons:
 
@@ -21,12 +21,23 @@ Shows the battery level of your wireless peripherals right on the Windows taskba
 - Device-type icon (mouse, headset, keyboard, controller) and percentage, vertically centered on the taskbar.
 - Turns red and shows a notification below 20%.
 - Numbers count smoothly when the level changes.
-- Hover to highlight it like a taskbar button; left-click to refresh, right-click for *Refresh now* / *Exit*.
+- Behaves like a taskbar button: it highlights on hover and a click opens the menu (*Refresh now*, *Settings…*, *Start with Windows*, *Exit*).
 - Starts with Windows. Uses ~20 MB of RAM and ~0% CPU.
+
+## Customization
+
+Click the battery readout → **Settings…** to change:
+
+- **Display:** show/hide device icons and the `%` sign, text color, color-by-level, text and icon size, spacing between devices, number animation.
+- **Position:** fine-tune horizontal and vertical offset.
+- **Behavior:** low-battery threshold, refresh interval, notifications, start with Windows.
+- **Devices:** hide any device you don't want to see.
+
+Settings are saved to `%LOCALAPPDATA%\BateriaEnBandeja\settings.ini`, so you can also edit them by hand.
 
 ## Install
 
-1. Download `BatteryTray-Setup.exe` from [Releases](../../releases/latest).
+1. Download `WirelessBatteryTray-Setup.exe` from [Releases](https://github.com/lDelia43/wireless-battery-tray/releases/latest).
 2. Run it. The installer isn't code-signed, so SmartScreen will warn you: **More info → Run anyway**.
 
 No admin rights needed. Uninstall from *Settings → Apps*.
