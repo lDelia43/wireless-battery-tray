@@ -83,68 +83,60 @@ static class Cfg
 class SettingsForm : Form
 {
     public event Action Applied;
+    static readonly Color Bg = Color.FromArgb(32, 32, 32), Card = Color.FromArgb(43, 43, 43), Line = Color.FromArgb(60, 60, 60), Dim = Color.FromArgb(170, 170, 170), Accent = Color.FromArgb(0, 120, 212);
+
+    TableLayoutPanel tabla;
 
     public SettingsForm(IEnumerable<string> devices)
     {
         Text = "Wireless Battery Tray - Settings";
-        FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen; AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new Font("Segoe UI", 9.5f); BackColor = Color.FromArgb(32, 32, 32); ForeColor = Color.White;
-        ClientSize = new Size(440, 560); ShowInTaskbar = true; TopMost = true;
+        FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen; AutoScaleMode = AutoScaleMode.Font;
+        Font = new Font("Segoe UI", 9.5f); BackColor = Bg; ForeColor = Color.White;
+        AutoSize = true; AutoSizeMode = AutoSizeMode.GrowAndShrink; ShowInTaskbar = true; TopMost = true;
+        Padding = new Padding(20, 12, 20, 16);
 
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(16) };
-        Controls.Add(flow);
+        tabla = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top };
+        tabla.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
+        tabla.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        Controls.Add(tabla);
 
-        Func<string, Label> titulo = t => new Label { Text = t, AutoSize = true, Font = new Font("Segoe UI Semibold", 10.5f), Margin = new Padding(0, 10, 0, 4) };
-        Func<string, decimal, decimal, decimal, NumericUpDown> num = (t, min, max, val) =>
-        {
-            var row = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 2, 0, 2) };
-            row.Controls.Add(new Label { Text = t, Width = 230, TextAlign = ContentAlignment.MiddleLeft, Height = 26 });
-            var n = new NumericUpDown { Minimum = min, Maximum = max, Value = Math.Max(min, Math.Min(max, val)), Width = 80, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White };
-            row.Controls.Add(n); flow.Controls.Add(row); return n;
-        };
-        Func<string, bool, CheckBox> chk = (t, v) => { var c = new CheckBox { Text = t, Checked = v, AutoSize = true, Margin = new Padding(0, 3, 0, 3) }; flow.Controls.Add(c); return c; };
+        Seccion("Display");
+        var cIcons = Check("Show device icons", Cfg.ShowIcons);
+        var cPct = Check("Show % sign", Cfg.ShowPercent);
+        var cColor = Check("Red text when battery is low", Cfg.ColorByLevel);
+        var cAnim = Check("Animate number changes", Cfg.Animate);
+        var bColor = new Button { Size = new Size(96, 26), BackColor = Cfg.TextColor, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand, Margin = new Padding(0, 4, 0, 4) };
+        bColor.FlatAppearance.BorderColor = Line;
+        bColor.Click += (s, e) => { using (var cd = new ColorDialog { Color = bColor.BackColor, FullOpen = true }) if (cd.ShowDialog(this) == DialogResult.OK) bColor.BackColor = cd.Color; };
+        Fila("Text color", bColor);
+        var nText = Num("Text size", 10, 30, (decimal)Cfg.TextSize);
+        var nIcon = Num("Icon size", 10, 32, (decimal)Cfg.IconSize);
+        var nSpace = Num("Space between devices", 4, 60, Cfg.Spacing);
 
-        flow.Controls.Add(titulo("Display"));
-        var cIcons = chk("Show device icons", Cfg.ShowIcons);
-        var cPct = chk("Show % sign", Cfg.ShowPercent);
-        var cColor = chk("Color by level (red when low)", Cfg.ColorByLevel);
-        var cAnim = chk("Animate number changes", Cfg.Animate);
-        var colorRow = new FlowLayoutPanel { AutoSize = true };
-        colorRow.Controls.Add(new Label { Text = "Text color", Width = 230, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
-        var bColor = new Button { Width = 80, Height = 26, BackColor = Cfg.TextColor, FlatStyle = FlatStyle.Flat };
-        bColor.Click += (s, e) => { using (var cd = new ColorDialog { Color = bColor.BackColor }) if (cd.ShowDialog(this) == DialogResult.OK) bColor.BackColor = cd.Color; };
-        colorRow.Controls.Add(bColor); flow.Controls.Add(colorRow);
-        var nText = num("Text size", 10, 30, (decimal)Cfg.TextSize);
-        var nIcon = num("Icon size", 10, 32, (decimal)Cfg.IconSize);
-        var nSpace = num("Space between devices", 4, 60, Cfg.Spacing);
+        Seccion("Position");
+        var nX = Num("Move left (px)", -500, 1500, Cfg.OffsetX);
+        var nY = Num("Move down (px)", -20, 20, Cfg.OffsetY);
 
-        flow.Controls.Add(titulo("Position"));
-        var nX = num("Move left (px)", -500, 1500, Cfg.OffsetX);
-        var nY = num("Move down (px)", -20, 20, Cfg.OffsetY);
-
-        flow.Controls.Add(titulo("Behavior"));
-        var nLow = num("Low battery warning at (%)", 0, 100, Cfg.LowThreshold);
-        var nRef = num("Refresh every (seconds)", 5, 600, Cfg.RefreshSeconds);
-        var cNot = chk("Show low battery notifications", Cfg.Notifications);
-        var cStart = chk("Start with Windows", Cfg.StartWithWindows);
+        Seccion("Behavior");
+        var nLow = Num("Low battery warning at (%)", 0, 100, Cfg.LowThreshold);
+        var nRef = Num("Refresh every (seconds)", 5, 600, Cfg.RefreshSeconds);
+        var cNot = Check("Low battery notifications", Cfg.Notifications);
+        var cStart = Check("Start with Windows", Cfg.StartWithWindows);
 
         var devs = devices.Concat(Cfg.Hidden).Distinct().ToList();
-        CheckedListBox lista = null;
+        var checksDev = new List<CheckBox>();
         if (devs.Count > 0)
         {
-            flow.Controls.Add(titulo("Devices (uncheck to hide)"));
-            lista = new CheckedListBox { Width = 390, Height = Math.Min(140, 22 * devs.Count + 6), CheckOnClick = true, BackColor = Color.FromArgb(45, 45, 45), ForeColor = Color.White, BorderStyle = BorderStyle.None };
-            foreach (var d in devs) lista.Items.Add(d, !Cfg.Hidden.Contains(d));
-            flow.Controls.Add(lista);
+            Seccion("Devices");
+            foreach (var d in devs) checksDev.Add(Check(d, !Cfg.Hidden.Contains(d)));
         }
 
-        var botones = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Width = 390, Margin = new Padding(0, 16, 0, 0) };
-        var ok = new Button { Text = "Save", Width = 90, Height = 30, BackColor = Color.FromArgb(0, 120, 212), FlatStyle = FlatStyle.Flat };
-        var cancel = new Button { Text = "Cancel", Width = 90, Height = 30, FlatStyle = FlatStyle.Flat };
-        var reset = new Button { Text = "Reset", Width = 90, Height = 30, FlatStyle = FlatStyle.Flat };
-        botones.Controls.AddRange(new Control[] { ok, cancel, reset });
-        flow.Controls.Add(botones);
+        // buttons
+        var barra = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill, Margin = new Padding(0, 18, 0, 0) };
+        var ok = Boton("Save", true); var cancel = Boton("Cancel", false); var reset = Boton("Reset", false);
+        barra.Controls.AddRange(new Control[] { ok, cancel, reset });
+        tabla.Controls.Add(barra); tabla.SetColumnSpan(barra, 2);
         AcceptButton = ok; CancelButton = cancel;
 
         cancel.Click += (s, e) => Close();
@@ -152,7 +144,7 @@ class SettingsForm : Form
         {
             cIcons.Checked = cPct.Checked = cColor.Checked = cAnim.Checked = cNot.Checked = true;
             bColor.BackColor = Color.White; nText.Value = 16; nIcon.Value = 20; nSpace.Value = 18; nX.Value = 0; nY.Value = 0; nLow.Value = 20; nRef.Value = 30;
-            if (lista != null) for (int i = 0; i < lista.Items.Count; i++) lista.SetItemChecked(i, true);
+            foreach (var c in checksDev) c.Checked = true;
         };
         ok.Click += (s, e) =>
         {
@@ -160,10 +152,41 @@ class SettingsForm : Form
             Cfg.TextColor = bColor.BackColor; Cfg.TextSize = (float)nText.Value; Cfg.IconSize = (float)nIcon.Value; Cfg.Spacing = (int)nSpace.Value;
             Cfg.OffsetX = (int)nX.Value; Cfg.OffsetY = (int)nY.Value; Cfg.LowThreshold = (int)nLow.Value; Cfg.RefreshSeconds = (int)nRef.Value;
             Cfg.Notifications = cNot.Checked; Cfg.SetStartWithWindows(cStart.Checked);
-            if (lista != null) { Cfg.Hidden.Clear(); for (int i = 0; i < lista.Items.Count; i++) if (!lista.GetItemChecked(i)) Cfg.Hidden.Add((string)lista.Items[i]); }
+            Cfg.Hidden.Clear(); foreach (var c in checksDev) if (!c.Checked) Cfg.Hidden.Add(c.Text);
             Cfg.Save();
             if (Applied != null) Applied();
             Close();
         };
+    }
+
+    void Seccion(string t)
+    {
+        var l = new Label { Text = t.ToUpperInvariant(), AutoSize = true, ForeColor = Dim, Font = new Font("Segoe UI Semibold", 8.5f), Margin = new Padding(0, tabla.Controls.Count == 0 ? 4 : 16, 0, 4) };
+        tabla.Controls.Add(l); tabla.SetColumnSpan(l, 2);
+    }
+
+    void Fila(string t, Control c)
+    {
+        tabla.Controls.Add(new Label { Text = t, AutoSize = false, Size = new Size(260, 34), TextAlign = ContentAlignment.MiddleLeft, Margin = Padding.Empty });
+        c.Anchor = AnchorStyles.Right; tabla.Controls.Add(c);
+    }
+
+    NumericUpDown Num(string t, decimal min, decimal max, decimal val)
+    {
+        var n = new NumericUpDown { Minimum = min, Maximum = max, Value = Math.Max(min, Math.Min(max, val)), Width = 96, BackColor = Card, ForeColor = Color.White, BorderStyle = BorderStyle.FixedSingle, TextAlign = HorizontalAlignment.Center, Margin = new Padding(0, 4, 0, 4) };
+        Fila(t, n); return n;
+    }
+
+    CheckBox Check(string t, bool v)
+    {
+        var c = new CheckBox { Text = t, Checked = v, AutoSize = true, Margin = new Padding(0, 6, 0, 6), Cursor = Cursors.Hand };
+        tabla.Controls.Add(c); tabla.SetColumnSpan(c, 2); return c;
+    }
+
+    static Button Boton(string t, bool principal)
+    {
+        var b = new Button { Text = t, Size = new Size(92, 32), FlatStyle = FlatStyle.Flat, BackColor = principal ? Accent : Color.FromArgb(55, 55, 55), ForeColor = Color.White, Cursor = Cursors.Hand, Margin = new Padding(8, 0, 0, 0) };
+        b.FlatAppearance.BorderColor = principal ? Accent : Line;
+        return b;
     }
 }
