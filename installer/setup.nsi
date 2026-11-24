@@ -1,60 +1,81 @@
 Unicode true
 Name "Wireless Battery Tray"
 OutFile "WirelessBatteryTray-Setup.exe"
-InstallDir "$LOCALAPPDATA\BateriaEnBandeja"
+InstallDir "$LOCALAPPDATA\WirelessBatteryTray"
 RequestExecutionLevel user
 !ifndef VERSION
   !define VERSION "dev"
 !endif
-!define EXE "BateriaEnBandeja-${VERSION}.exe"
+!define EXE "WirelessBatteryTray-${VERSION}.exe"
+!define UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\WirelessBatteryTray"
 
 Page directory
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
-Section "Instalar"
+!macro CloseApp
+  nsExec::Exec `powershell -NoProfile -Command "Get-Process WirelessBatteryTray*,BateriaEnBandeja* -EA 0 | ? { $$_.Path -notlike '*Setup*' -and $$_.ProcessName -notlike '*Setup*' } | Stop-Process -Force; Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | ? CommandLine -like '*BateriaBandeja*' | % { Stop-Process -Id $$_.ProcessId -Force }"`
+  Sleep 800
+!macroend
+
+Section "Install"
+  !insertmacro CloseApp
   SetOutPath "$INSTDIR"
+
+  ; migrate from the old Spanish-named install
+  IfFileExists "$LOCALAPPDATA\BateriaEnBandeja\settings.ini" 0 +2
+    CopyFiles /SILENT "$LOCALAPPDATA\BateriaEnBandeja\settings.ini" "$INSTDIR"
+  IfFileExists "$LOCALAPPDATA\BateriaEnBandeja\iCUESDK.x64_2019.dll" 0 +2
+    CopyFiles /SILENT "$LOCALAPPDATA\BateriaEnBandeja\iCUESDK.x64_2019.dll" "$INSTDIR"
+  RMDir /r "$LOCALAPPDATA\BateriaEnBandeja"
   Delete "$SMSTARTUP\Bateria en Bandeja.lnk"
   RMDir /r "$SMPROGRAMS\Bateria en Bandeja"
-  Delete "$INSTDIR\BateriaBandeja.ps1"
-  Delete "$INSTDIR\IniciarBateria.vbs"
-  Delete "$INSTDIR\debug.txt"
-  Delete "$INSTDIR\posicion*.txt"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja"
+
+  ; if the exe is somehow still locked, move it aside
+  ClearErrors
+  Delete "$INSTDIR\${EXE}"
+  IfErrors 0 +2
+    Rename "$INSTDIR\${EXE}" "$INSTDIR\${EXE}.old"
+
   File "${EXE}"
   SetOverwrite off
   File /nonfatal "iCUESDK.x64_2019.dll"
   SetOverwrite on
-  WriteUninstaller "$INSTDIR\Desinstalar.exe"
+  WriteUninstaller "$INSTDIR\Uninstall.exe"
+
   CreateShortcut "$SMSTARTUP\Wireless Battery Tray.lnk" "$INSTDIR\${EXE}"
   CreateDirectory "$SMPROGRAMS\Wireless Battery Tray"
   CreateShortcut "$SMPROGRAMS\Wireless Battery Tray\Wireless Battery Tray.lnk" "$INSTDIR\${EXE}"
-  CreateShortcut "$SMPROGRAMS\Wireless Battery Tray\Uninstall.lnk" "$INSTDIR\Desinstalar.exe"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "DisplayName" "Wireless Battery Tray"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "DisplayIcon" "$INSTDIR\${EXE}"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja" "UninstallString" '"$INSTDIR\Desinstalar.exe"'
-  ; the new instance closes the old one on startup
-  Exec '"$INSTDIR\${EXE}"'
-  ; remove old versions
-  Sleep 2500
-  FindFirst $0 $1 "$INSTDIR\BateriaEnBandeja*.exe"
+  CreateShortcut "$SMPROGRAMS\Wireless Battery Tray\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+  WriteRegStr HKCU "${UNINST}" "DisplayName" "Wireless Battery Tray"
+  WriteRegStr HKCU "${UNINST}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${UNINST}" "Publisher" "lDelia43"
+  WriteRegStr HKCU "${UNINST}" "DisplayIcon" "$INSTDIR\${EXE}"
+  WriteRegStr HKCU "${UNINST}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+
+  SetOutPath "$INSTDIR"
+  ExecShell "open" "$INSTDIR\${EXE}"
+
+  ; remove older versions
+  Sleep 1500
+  FindFirst $0 $1 "$INSTDIR\WirelessBatteryTray-*.exe*"
   loop:
-    StrCmp $1 "" fin
-    StrCmp $1 "${EXE}" sig
+    StrCmp $1 "" done
+    StrCmp $1 "${EXE}" next
     Delete "$INSTDIR\$1"
-  sig:
+  next:
     FindNext $0 $1
     Goto loop
-  fin:
+  done:
   FindClose $0
-  nsExec::Exec `powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | ? CommandLine -like '*BateriaBandeja*' | % { Stop-Process -Id $$_.ProcessId -Force }"`
 SectionEnd
 
 Section "Uninstall"
-  nsExec::Exec 'powershell -NoProfile -Command "Get-Process BateriaEnBandeja* | Stop-Process -Force"'
-  Sleep 1000
+  !insertmacro CloseApp
   Delete "$SMSTARTUP\Wireless Battery Tray.lnk"
   RMDir /r "$SMPROGRAMS\Wireless Battery Tray"
   RMDir /r "$INSTDIR"
-  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\BateriaEnBandeja"
+  DeleteRegKey HKCU "${UNINST}"
 SectionEnd

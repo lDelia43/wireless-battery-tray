@@ -18,7 +18,7 @@ Shows the battery level of your wireless peripherals right on the Windows taskba
 
 ## Features
 
-- Device-type icon (mouse, headset, keyboard, controller) and percentage, vertically centered on the taskbar.
+- Device-type icon (mouse, headset, keyboard, controller) and percentage, vertically centered on the taskbar, using the same text color as the taskbar clock (follows Windows light/dark mode).
 - Turns red and shows a notification below 20%.
 - Numbers count smoothly when the level changes.
 - Behaves like a taskbar button: it highlights on hover and a click opens the menu (*Refresh now*, *Settings…*, *Start with Windows*, *Exit*).
@@ -26,14 +26,15 @@ Shows the battery level of your wireless peripherals right on the Windows taskba
 
 ## Customization
 
+Drag the readout along the taskbar to move it (*Lock position* / *Reset position* in the menu).
+
 Click the battery readout → **Settings…** to change:
 
-- **Display:** show/hide device icons and the `%` sign, text color, color-by-level, text and icon size, spacing between devices, number animation.
-- **Position:** fine-tune horizontal and vertical offset.
+- **Display:** show/hide device icons and the `%` sign, red-when-low, text and icon size, spacing between devices, number animation.
 - **Behavior:** low-battery threshold, refresh interval, notifications, start with Windows.
 - **Devices:** hide any device you don't want to see.
 
-Settings are saved to `%LOCALAPPDATA%\BateriaEnBandeja\settings.ini`, so you can also edit them by hand.
+Settings are saved to `%LOCALAPPDATA%\WirelessBatteryTray\settings.ini`, so you can also edit them by hand.
 
 ## Install
 
@@ -44,14 +45,14 @@ No admin rights needed. Uninstall from *Settings → Apps*.
 
 ### Corsair support
 
-Corsair support uses the official iCUE SDK, which is not redistributed here. To enable it, download `iCUESDK.x64_2019.dll` from [CorsairOfficial/cue-sdk](https://github.com/CorsairOfficial/cue-sdk/releases) (`redist/x64` folder) and copy it to `%LOCALAPPDATA%\BateriaEnBandeja\`.
+Corsair support uses the official iCUE SDK, which is not redistributed here. To enable it, download `iCUESDK.x64_2019.dll` from [CorsairOfficial/cue-sdk](https://github.com/CorsairOfficial/cue-sdk/releases) (`redist/x64` folder) and copy it to `%LOCALAPPDATA%\WirelessBatteryTray\`.
 
 ## Build
 
 Requires .NET Framework 4.5+ (included with Windows 10/11) and [NSIS](https://nsis.sourceforge.io/) for the installer.
 
 ```bat
-csc /target:winexe /platform:x64 /out:installer\BateriaEnBandeja-1.0.0.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll src\*.cs
+csc /target:winexe /platform:x64 /out:installer\WirelessBatteryTray-1.0.0.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll src\*.cs
 makensis /DVERSION=1.0.0 installer\setup.nsi
 ```
 

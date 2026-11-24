@@ -52,6 +52,9 @@ class Overlay : Form
     struct POINT { public int x, y; } struct SIZE { public int cx, cy; }
     [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte op, flags, alpha, format; }
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     struct RECT { public int Left, Top, Right, Bottom; }
 
     static readonly Color Fondo = Color.FromArgb(28, 28, 28);
@@ -70,16 +73,53 @@ class Overlay : Form
         // cerrar cualquier otra version que este corriendo
         var yo = System.Diagnostics.Process.GetCurrentProcess();
         foreach (var p in System.Diagnostics.Process.GetProcesses())
-            try { if (p.Id != yo.Id && p.ProcessName.StartsWith("BateriaEnBandeja", StringComparison.OrdinalIgnoreCase)) { p.Kill(); p.WaitForExit(3000); } } catch { }
+            try { if (p.Id != yo.Id && (p.ProcessName.StartsWith("WirelessBatteryTray", StringComparison.OrdinalIgnoreCase) || p.ProcessName.StartsWith("BateriaEnBandeja", StringComparison.OrdinalIgnoreCase)) && p.ProcessName.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) < 0) { p.Kill(); p.WaitForExit(3000); } } catch { }
         {
             SetProcessDPIAware();
             Application.EnableVisualStyles();
-            Application.Run(new Overlay());
+            Application.ThreadException += (s, e) => Fallo(e.Exception);
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => Fallo(e.ExceptionObject as Exception);
+            Cfg.Load();
+            // one overlay per selected monitor's taskbar (main monitor if none selected)
+            var barras = Barras();
+            var elegidas = barras.Where(b => Cfg.Monitors.Count == 0 ? b.Item3 : Cfg.Monitors.Contains(b.Item2)).ToList();
+            if (elegidas.Count == 0) elegidas.Add(barras.First(b => b.Item3));
+            Overlay lector = null;
+            foreach (var b in elegidas)
+            {
+                var o = new Overlay(b.Item1, lector == null, b.Item3);
+                if (lector == null) lector = o; else o.Show();
+            }
+            Application.Run(lector);
         }
     }
 
-    Overlay()
+    static void Fallo(Exception ex)
     {
+        try { MessageBox.Show("Wireless Battery Tray " + Version + " crashed:\n\n" + ex, "Wireless Battery Tray", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+    }
+    static string Version { get { var n = System.IO.Path.GetFileNameWithoutExtension(Application.ExecutablePath); return n.StartsWith("WirelessBatteryTray-") ? n.Substring(20) : n; } }
+
+    // taskbars: (handle, monitor device name, is main taskbar)
+    public static List<Tuple<IntPtr, string, bool>> Barras()
+    {
+        var res = new List<Tuple<IntPtr, string, bool>>();
+        var p = FindWindow("Shell_TrayWnd", null);
+        if (p != IntPtr.Zero) res.Add(Tuple.Create(p, Screen.FromHandle(p).DeviceName, true));
+        for (var h = FindWindowEx(IntPtr.Zero, IntPtr.Zero, "Shell_SecondaryTrayWnd", null); h != IntPtr.Zero; h = FindWindowEx(IntPtr.Zero, h, "Shell_SecondaryTrayWnd", null))
+            res.Add(Tuple.Create(h, Screen.FromHandle(h).DeviceName, false));
+        return res;
+    }
+
+    // one overlay per taskbar; only the main one reads batteries and shows notifications
+    static readonly List<Overlay> todas = new List<Overlay>();
+    readonly PosMon pos;
+    readonly IntPtr barra; readonly bool principal, barraPrincipal;   // principal = reads batteries; barraPrincipal = sits on the main taskbar
+
+    Overlay(IntPtr barra, bool principal, bool barraPrincipal)
+    {
+        this.barra = barra; this.principal = principal; this.barraPrincipal = barraPrincipal; pos = Cfg.PosDe(Screen.FromHandle(barra).DeviceName); todas.Add(this);
         fuenteIconos = new System.Drawing.Text.InstalledFontCollection().Families.Any(f => f.Name == "Segoe Fluent Icons")
             ? "Segoe Fluent Icons" : "Segoe MDL2 Assets";
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
@@ -90,18 +130,26 @@ class Overlay : Form
         Cfg.Load();
         menu.Renderer = new ToolStripProfessionalRenderer(new MenuColores());
         menu.ForeColor = Color.White; menu.ShowImageMargin = false; menu.Font = new Font("Segoe UI", 9.5f);
+        menu.Items.Add(new ToolStripMenuItem("Wireless Battery Tray " + Version) { Enabled = false });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Refresh now", null, (s, e) => Consultar());
         menu.Items.Add("Settings...", null, (s, e) => AbrirAjustes());
+        menu.Items.Add("Reset position", null, (s, e) => { pos.OffsetX = 0; Cfg.Save(); Posicionar(); Dibujar(); });
+        var lado = new ToolStripMenuItem("Move to left side");
+        lado.Click += (s, e) => { pos.LeftSide = !pos.LeftSide; pos.OffsetX = 0; Cfg.Save(); Posicionar(); Dibujar(); };
+        menu.Items.Add(lado);
+        var bloqueo = new ToolStripMenuItem("Lock position");
+        bloqueo.Click += (s, e) => { pos.Locked = !pos.Locked; Cfg.Save(); };
+        menu.Items.Add(bloqueo);
         var inicio = new ToolStripMenuItem("Start with Windows") { CheckOnClick = true };
         inicio.Click += (s, e) => Cfg.SetStartWithWindows(inicio.Checked);
         menu.Items.Add(inicio);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (s, e) => { aviso.Dispose(); Application.Exit(); });
-        menu.Opening += (s, e) => inicio.Checked = Cfg.StartWithWindows;
+        menu.Opening += (s, e) => { inicio.Checked = Cfg.StartWithWindows; bloqueo.Text = pos.Locked ? "Unlock position" : "Lock position"; lado.Text = pos.LeftSide ? "Move to right side" : "Move to left side"; };
         menu.Closed += (s, e) => { abierto = false; menuCerrado = DateTime.Now; Dibujar(); };
         cierreMenu = new System.Windows.Forms.Timer { Interval = 30 };
         cierreMenu.Tick += (s, e) => VigilarClicFuera();
-        ContextMenuStrip = menu;
 
         var anim = new System.Windows.Forms.Timer { Interval = 60 };
         anim.Tick += (s, e) => { foreach (var f in filas.Values) if (f.Mostrado >= 0 && f.Mostrado != f.Objetivo) { f.Mostrado += Math.Sign(f.Objetivo - f.Mostrado); Pintar(f); } };
@@ -109,19 +157,38 @@ class Overlay : Form
 
         // revisa cada 50 ms si la barra quedo encima; solo en ese caso vuelve a subir (sin redibujar de mas)
         var top = new System.Windows.Forms.Timer { Interval = 50 };
-        top.Tick += (s, e) => { Duenio(); if (BarraEncima()) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013); };
+        top.Tick += (s, e) =>
+        {
+            Duenio();
+            bool tapada = BarraOculta();
+            if (tapada != oculto) { oculto = tapada; ShowWindow(Handle, tapada ? 0 : 8); if (!tapada) { Posicionar(); Dibujar(); } }   // SW_HIDE / SW_SHOWNA
+            if (!oculto && BarraEncima()) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+        };
         top.Start();
 
         refresco = new System.Windows.Forms.Timer { Interval = Cfg.RefreshSeconds * 1000 };
         refresco.Tick += (s, e) => Consultar();
-        refresco.Start();
+        if (principal) refresco.Start();
 
         MouseEnter += (s, e) => { hover = true; Dibujar(); };
         MouseLeave += (s, e) => { hover = false; Dibujar(); };
         Cursor = Cursors.Hand;
-        MouseDown += (s, e) => { presionado = true; Dibujar(); };
-        MouseUp += (s, e) => { presionado = false; if (menu.Visible || (DateTime.Now - menuCerrado).TotalMilliseconds < 200) { menu.Close(); Dibujar(); } else AbrirMenu(); };
-        Shown += (s, e) => { Duenio(); Consultar(); };
+        MouseDown += (s, e) => { if (e.Button != MouseButtons.Left) return; presionado = true; arrastrando = false; inicioArrastre = Cursor.Position; offsetInicial = pos.OffsetX; Dibujar(); };
+        MouseMove += (s, e) =>
+        {
+            if (!presionado || pos.Locked) return;
+            var c = Cursor.Position;
+            int d = vertical ? c.Y - inicioArrastre.Y : c.X - inicioArrastre.X;
+            if (!arrastrando && Math.Abs(d) < 5) return;
+            arrastrando = true; Cursor = vertical ? Cursors.SizeNS : Cursors.SizeWE;
+            pos.OffsetX = Math.Max(0, (pos.LeftSide && !vertical) ? offsetInicial + d : offsetInicial - d); Posicionar(); Dibujar();
+        };
+        MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) { if (menu.Visible) menu.Close(); else AbrirMenu(); return; }
+            if (e.Button != MouseButtons.Left) return; presionado = false;
+            if (arrastrando) { arrastrando = false; Cursor = Cursors.Hand; Cfg.Save(); Posicionar(); Dibujar(); return; }
+            if (menu.Visible || (DateTime.Now - menuCerrado).TotalMilliseconds < 200) { menu.Close(); Dibujar(); } else AbrirMenu(); };
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => { if (IsHandleCreated) BeginInvoke(new Action(Dibujar)); };
+        Shown += (s, e) => { Duenio(); if (principal) Consultar(); else if (todas[0].ultimos.Count > 0) Mostrar(new List<Dispositivo>(todas[0].ultimos)); };
     }
 
     // ventana de herramienta que no roba el foco ni aparece en Alt+Tab
@@ -131,10 +198,30 @@ class Overlay : Form
     }
     protected override bool ShowWithoutActivation { get { return true; } }
 
+    bool oculto;
+
+    // hide while the taskbar can't be seen: a full-screen app on this monitor, or an auto-hidden taskbar
+    bool BarraOculta()
+    {
+        RECT tb; if (!GetWindowRect(barra, out tb) || !IsWindowVisible(barra)) return true;
+        var mon = Screen.FromHandle(barra).Bounds;
+        int visibleAlto = Math.Min(tb.Bottom, mon.Bottom) - Math.Max(tb.Top, mon.Top), visibleAncho = Math.Min(tb.Right, mon.Right) - Math.Max(tb.Left, mon.Left);
+        if (visibleAlto < 8 || visibleAncho < 8) return true;   // auto-hide taskbar slid off screen
+
+        var fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero || fg == Handle || fg == barra) return false;
+        var cls = new StringBuilder(64); GetClassName(fg, cls, 64);
+        string c = cls.ToString();
+        if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") return false;
+        RECT w; if (!GetWindowRect(fg, out w)) return false;
+        return Screen.FromHandle(fg).DeviceName == Screen.FromHandle(barra).DeviceName
+            && w.Left <= mon.Left && w.Top <= mon.Top && w.Right >= mon.Right && w.Bottom >= mon.Bottom;
+    }
+
     IntPtr duenioActual = IntPtr.Zero;
     void Duenio()
     {
-        var tb = FindWindow("Shell_TrayWnd", null);
+        var tb = barra;
         if (tb != IntPtr.Zero && tb != duenioActual) { SetWindowLongPtr(Handle, -8, tb); duenioActual = tb; }
     }
 
@@ -158,10 +245,11 @@ class Overlay : Form
 
     void Consultar()
     {
+        if (!principal) { todas[0].Consultar(); return; }
         if (consultando) return;
         consultando = true;
         Task.Run(() => { var l = new List<Dispositivo>(); try { l.AddRange(LeerGHub()); } catch { } try { l.AddRange(LeerXbox()); } catch { } try { l.AddRange(Corsair.Leer()); } catch { } try { l.AddRange(HyperX.Leer()); } catch { } try { foreach (var b in LeerBluetooth()) if (!l.Any(x => x.Nombre == b.Nombre)) l.Add(b); } catch { } return l; })
-            .ContinueWith(t => { consultando = false; Mostrar(t.Result); }, TaskScheduler.FromCurrentSynchronizationContext());
+            .ContinueWith(t => { consultando = false; foreach (var o in todas.ToList()) if (!o.IsDisposed) o.Mostrar(new List<Dispositivo>(t.Result)); }, TaskScheduler.FromCurrentSynchronizationContext());
     }
 
     // ---- Bluetooth generico (teclados, mouses, auriculares de cualquier marca) ----
@@ -278,13 +366,33 @@ class Overlay : Form
         return "";
     }
 
-    static Color ColorNivel(int n)
-    { return n < 0 ? Color.Gray : (Cfg.ColorByLevel && n <= UmbralAviso) ? Color.FromArgb(255, 90, 90) : Cfg.TextColor; }
+    // same text color as the taskbar clock: white on a dark taskbar, black on a light one
+    static Color ColorBarra()
+    {
+        try
+        {
+            using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+            {
+                var v = k == null ? null : k.GetValue("SystemUsesLightTheme");
+                if (v is int && (int)v == 1) return Color.Black;
+            }
+        }
+        catch { }
+        return Color.White;
+    }
+
+    Color ColorNivel(int n)
+    {
+        var baseC = ColorBarra();
+        if (n < 0) return Color.FromArgb(150, baseC);
+        if (pos.ColorByLevel && n <= UmbralAviso) return baseC == Color.Black ? Color.FromArgb(196, 43, 28) : Color.FromArgb(255, 99, 88);
+        return baseC;
+    }
 
     void Mostrar(List<Dispositivo> datos)
     {
         ultimos = new List<Dispositivo>(datos);
-        datos = datos.Where(d => !Cfg.Hidden.Contains(d.Nombre)).ToList();
+        datos = datos.Where(d => !pos.Hidden.Contains(d.Nombre)).ToList();
         if (datos.Count == 0) datos.Add(new Dispositivo { Nombre = "Open G HUB", Tipo = "", Nivel = -1 });
         foreach (var n in filas.Keys.ToList())
             if (!datos.Any(d => d.Nombre == n)) { orden.Remove(filas[n]); filas.Remove(n); }
@@ -297,10 +405,10 @@ class Overlay : Form
                 filas[d.Nombre] = f; orden.Add(f);
             }
             f.Objetivo = d.Nivel; f.Etiqueta = d.Etiqueta;
-            if (d.Nivel < 0 || f.Mostrado < 0 || d.Etiqueta != null || !Cfg.Animate) f.Mostrado = d.Nivel;
+            if (d.Nivel < 0 || f.Mostrado < 0 || d.Etiqueta != null || !pos.Animate) f.Mostrado = d.Nivel;
 
             bool ya; avisado.TryGetValue(d.Nombre, out ya);
-            if (Cfg.Notifications && d.Nivel >= 0 && d.Nivel <= UmbralAviso && !ya)
+            if (principal && Cfg.Notifications && d.Nivel >= 0 && d.Nivel <= UmbralAviso && !ya)
             {
                 aviso.Visible = true;
                 aviso.ShowBalloonTip(8000, "Low battery", d.Nombre + (d.Etiqueta != null ? " battery is " + d.Etiqueta.ToLower() : " is at " + d.Nivel + "%") + ". Time to charge it!", ToolTipIcon.Warning);
@@ -315,9 +423,9 @@ class Overlay : Form
     void Pintar(Fila f) { Reajustar(); }
 
     // ---- dibujo: cada simbolo y numero se centra por su contorno real ----
-    static float TamIcono { get { return Cfg.IconSize; } } static float TamTexto { get { return Cfg.TextSize; } } static float EspacioEntre { get { return Cfg.Spacing; } }
+    float TamIcono { get { return pos.IconSize; } } float TamTexto { get { return pos.TextSize; } } float EspacioEntre { get { return pos.Spacing; } }
     const float EspacioIconoTexto = 7f, PadIzq = 8f, PadDer = 8f;
-    static string TextoDe(Fila f) { return f.Etiqueta ?? (f.Mostrado < 0 ? "--" : f.Mostrado + (Cfg.ShowPercent ? "%" : "")); }
+    string TextoDe(Fila f) { return f.Etiqueta ?? (f.Mostrado < 0 ? "--" : f.Mostrado + (pos.ShowPercent ? "%" : "")); }
 
     static System.Drawing.Drawing2D.GraphicsPath Ruta(string txt, string fuente, float px)
     {
@@ -326,15 +434,24 @@ class Overlay : Form
         return p;
     }
 
-    float AnchoTotal()
+    IEnumerable<Tuple<string, string, float, float>> Partes(Fila f)
+    {
+        if (pos.ShowIcons) yield return Tuple.Create(f.Glifo, fuenteIconos, TamIcono, EspacioIconoTexto);
+        yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre);
+    }
+
+    // horizontal taskbar: total width; vertical taskbar: total height (icon above number, stacked)
+    float LargoTotal()
     {
         float w = 0;
         foreach (var f in orden)
-        {
-            if (Cfg.ShowIcons) using (var pi = Ruta(f.Glifo, fuenteIconos, TamIcono)) w += pi.GetBounds().Width + EspacioIconoTexto;
-            using (var pt = Ruta(TextoDe(f), "Segoe UI", TamTexto)) w += pt.GetBounds().Width + EspacioEntre;
-        }
-        return Math.Max(1, w - EspacioEntre + PadIzq + PadDer);
+            foreach (var par in Partes(f))
+                using (var p = Ruta(par.Item1, par.Item2, par.Item3))
+                {
+                    var b = p.GetBounds();
+                    w += (vertical ? b.Height + (par.Item4 == EspacioIconoTexto ? 5 : 14) : b.Width + par.Item4);
+                }
+        return Math.Max(1, w - (vertical ? 14 : EspacioEntre) + PadIzq + PadDer);
     }
 
     void Dibujar()
@@ -348,20 +465,28 @@ class Overlay : Form
                 // fondo casi invisible (alfa 1) para que toda la zona reciba clics; al pasar el mouse, resaltado tipo boton
                 var fondo = (presionado || abierto) ? Color.FromArgb(18, 255, 255, 255) : hover ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(1, 0, 0, 0);
                 using (var br = new SolidBrush(fondo))
-                using (var path = Redondeado(new RectangleF(0, 4, Width - 1, Height - 9), 5))
+                using (var path = Redondeado(vertical ? new RectangleF(4, 0, Width - 9, Height - 1) : new RectangleF(0, 4, Width - 1, Height - 9), 5))
                     g.FillPath(br, path);
-                float x = PadIzq, cy = Height / 2f;
+                float pos = PadIzq, cx = Width / 2f, cy = Height / 2f;
                 foreach (var f in orden)
                 using (var br = new SolidBrush(ColorNivel(f.Mostrado)))
                 {
-                    foreach (var par in (Cfg.ShowIcons ? new[] { Tuple.Create(f.Glifo, fuenteIconos, TamIcono, EspacioIconoTexto) } : new Tuple<string, string, float, float>[0]).Concat(new[] { Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre) }))
+                    foreach (var par in Partes(f))
                     using (var p = Ruta(par.Item1, par.Item2, par.Item3))
                     {
                         var bb = p.GetBounds();
                         var m = new System.Drawing.Drawing2D.Matrix();
-                        m.Translate(x - bb.Left, (float)Math.Round(cy - bb.Height / 2f) - bb.Top);
+                        if (vertical)
+                        {
+                            m.Translate((float)Math.Round(cx - bb.Width / 2f) - bb.Left, pos - bb.Top);
+                            pos += bb.Height + (par.Item4 == EspacioIconoTexto ? 5 : 14);
+                        }
+                        else
+                        {
+                            m.Translate(pos - bb.Left, (float)Math.Round(cy - bb.Height / 2f) - bb.Top);
+                            pos += bb.Width + par.Item4;
+                        }
                         p.Transform(m); g.FillPath(br, p);
-                        x += bb.Width + par.Item4;
                     }
                 }
             }
@@ -381,14 +506,28 @@ class Overlay : Form
         p.CloseFigure(); return p;
     }
 
-    int altoBarra = 48; bool hover, presionado, abierto; DateTime menuCerrado;
+    int altoBarra = 48, anchoBarra = 48; bool vertical, hover, presionado, abierto, arrastrando; DateTime menuCerrado;
+    Point inicioArrastre; int offsetInicial;
+
+    // read taskbar rectangle and orientation (left/right taskbars are vertical)
+    bool LeerBarra(out RECT r)
+    {
+        var tb = barra;
+        if (tb == IntPtr.Zero || !GetWindowRect(tb, out r)) { r = new RECT(); return false; }
+        altoBarra = r.Bottom - r.Top; anchoBarra = r.Right - r.Left; vertical = altoBarra > anchoBarra;
+        return true;
+    }
 
     void AbrirMenu()
     {
         abierto = true; Dibujar();
         // open the menu above the button, aligned to its right edge, like the system tray flyouts
         SetForegroundWindow(Handle);
-        menu.Show(this, new Point(Width - menu.PreferredSize.Width, -menu.PreferredSize.Height - 6));
+        var ps = menu.PreferredSize; var scr = Screen.FromControl(this).Bounds;
+        Point donde;
+        if (!vertical) donde = Top > scr.Top + scr.Height / 2 ? new Point(Width - ps.Width, -ps.Height - 6) : new Point(Width - ps.Width, Height + 6);   // bottom or top taskbar
+        else donde = Left < scr.Left + scr.Width / 2 ? new Point(Width + 6, Height - ps.Height) : new Point(-ps.Width - 6, Height - ps.Height);   // left or right taskbar
+        menu.Show(this, donde);
         cierreMenu.Start();
     }
 
@@ -404,29 +543,115 @@ class Overlay : Form
     void AbrirAjustes()
     {
         if (ajustes != null && !ajustes.IsDisposed) { ajustes.Activate(); return; }
-        ajustes = new SettingsForm(ultimos.Select(d => d.Nombre).Where(n => n != "Open G HUB"));
-        ajustes.Applied += () => { refresco.Interval = Cfg.RefreshSeconds * 1000; Mostrar(new List<Dispositivo>(ultimos)); };
+        ajustes = new SettingsForm(todas[0].ultimos.Select(d => d.Nombre).Where(n => n != "Open G HUB"), pos, Screen.FromHandle(barra).DeviceName);
+        ajustes.Applied += () => { todas[0].refresco.Interval = Cfg.RefreshSeconds * 1000; foreach (var o in todas) o.Mostrar(new List<Dispositivo>(todas[0].ultimos)); };
         ajustes.Show();
     }
     void Reajustar()
     {
-        RECT r; var tb = FindWindow("Shell_TrayWnd", null);
-        if (tb != IntPtr.Zero && GetWindowRect(tb, out r)) altoBarra = r.Bottom - r.Top;
-        var nuevo = new Size((int)Math.Ceiling(AnchoTotal()), altoBarra);
+        RECT r; LeerBarra(out r);
+        int largo = (int)Math.Ceiling(LargoTotal());
+        var nuevo = vertical ? new Size(anchoBarra, largo) : new Size(largo, altoBarra);
         if (Size != nuevo) Size = nuevo;
         Posicionar();
         Dibujar();
     }
 
+    // Allowed horizontal range: always keep a 25 px gap (the default one) from the tray icons,
+    // the pinned app buttons and the screen edge. App buttons are found through UI Automation.
+    const int Margen = 25;
+    int appsIzq = -1, appsDer = -1, widgetsDer = -1, relojIzq = -1; DateTime appsLeidos; bool leyendoApps;
+    void Limites(RECT r, int trayLeft, out int minX, out int maxX)
+    {
+        // UI Automation is slow: refresh the cached button positions in the background
+        if (!leyendoApps && (DateTime.Now - appsLeidos).TotalSeconds > (arrastrando ? 2 : 20))
+        {
+            leyendoApps = true; appsLeidos = DateTime.Now;
+            var rr = r; int tl = barraPrincipal ? trayLeft : r.Right;
+            Task.Run(() => LeerApps(rr, tl)).ContinueWith(t => { leyendoApps = false; Posicionar(); Dibujar(); }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+        if (pos.LeftSide)
+        {
+            minX = (widgetsDer > 0 ? widgetsDer : r.Left) + Margen;
+            maxX = (appsIzq > 0 ? appsIzq : (r.Left + r.Right) / 2) - Margen - Width;
+        }
+        else
+        {
+            maxX = trayLeft - Width - SeparacionPx;
+            minX = appsDer > 0 ? appsDer + Margen : r.Left + Margen;
+        }
+        if (maxX < minX) maxX = minX;
+    }
+
+    void LeerApps(RECT r, int trayLeft)
+    {
+        try
+        {
+            var asm = System.Reflection.Assembly.Load("UIAutomationClient, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35");
+            var tipos = System.Reflection.Assembly.Load("UIAutomationTypes, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35");
+            var aeT = asm.GetType("System.Windows.Automation.AutomationElement");
+            object raiz = aeT.GetMethod("FromHandle").Invoke(null, new object[] { barra });
+            object cond = asm.GetType("System.Windows.Automation.Condition").GetField("TrueCondition").GetValue(null);
+            object scope = Enum.ToObject(tipos.GetType("System.Windows.Automation.TreeScope"), 4);   // Descendants
+            var todos = (System.Collections.IEnumerable)aeT.GetMethod("FindAll").Invoke(raiz, new[] { scope, cond });
+            var botones = new List<Tuple<int, int, string>>();
+            foreach (object el in todos)
+            {
+                object cur = el.GetType().GetProperty("Current").GetValue(el, null);
+                object ct = cur.GetType().GetProperty("ControlType").GetValue(cur, null);
+                string prog = (string)ct.GetType().GetProperty("ProgrammaticName").GetValue(ct, null);
+                bool esTexto = prog == "ControlType.Text";
+                if (prog != "ControlType.Button" && prog != "ControlType.ListItem" && prog != "ControlType.MenuItem" && !(esTexto && !barraPrincipal)) continue;
+                object rect = cur.GetType().GetProperty("BoundingRectangle").GetValue(cur, null);
+                double l = (double)rect.GetType().GetProperty("Left").GetValue(rect, null), w = (double)rect.GetType().GetProperty("Width").GetValue(rect, null);
+                if (double.IsInfinity(l) || w <= 0 || w > 200 || l + w > trayLeft || l < r.Left) continue;
+                string id = (string)cur.GetType().GetProperty("AutomationId").GetValue(cur, null);
+                botones.Add(Tuple.Create((int)l, (int)(l + w), id ?? ""));
+            }
+            if (botones.Count == 0) return;
+            botones.Sort((a, b) => a.Item1.CompareTo(b.Item1));
+            // the app cluster starts at the Start button (or the first button) and continues while buttons are adjacent
+            int i0 = botones.FindIndex(b => b.Item3 == "StartButton"); if (i0 < 0) i0 = 0;
+            int izq = botones[i0].Item1, der = botones[i0].Item2;
+            for (int i = i0 + 1; i < botones.Count && botones[i].Item1 - der < 60; i++) der = Math.Max(der, botones[i].Item2);
+            int wd = -1; for (int i = 0; i < i0; i++) if (botones[i].Item2 < izq - 20 && botones[i].Item2 < r.Left + 400) wd = Math.Max(wd, botones[i].Item2);   // e.g. the Widgets button on the far left
+            appsIzq = izq; appsDer = der; widgetsDer = wd;
+            // secondary taskbars: the clock is the right-most group of buttons
+            int j = botones.Count - 1;
+            if (j > i0 && botones[j].Item1 > der + 60)
+            {
+                int rl = botones[j].Item1;
+                for (int k = j - 1; k > i0 && rl - botones[k].Item2 < 20; k--) rl = Math.Min(rl, botones[k].Item1);
+                relojIzq = rl;
+            }
+        }
+        catch { }
+    }
+
     void Posicionar()
     {
-        RECT r, rn;
-        var tb = FindWindow("Shell_TrayWnd", null);
-        if (tb == IntPtr.Zero || !GetWindowRect(tb, out r)) return;
-        int trayLeft = r.Right - 330;
-        var tn = FindWindowEx(tb, IntPtr.Zero, "TrayNotifyWnd", null);
-        if (tn != IntPtr.Zero && GetWindowRect(tn, out rn) && rn.Left > r.Left) trayLeft = rn.Left;
-        Location = new Point(trayLeft - Width - SeparacionPx - Cfg.OffsetX, r.Top + (r.Bottom - r.Top - Height) / 2 + Cfg.OffsetY);
+        RECT r, rn = new RECT();
+        if (!LeerBarra(out r)) return;
+        var tn = FindWindowEx(barra, IntPtr.Zero, "TrayNotifyWnd", null);
+        bool hayTray = tn != IntPtr.Zero && GetWindowRect(tn, out rn);
+        // OffsetX = distance moved along the taskbar (dragging), OffsetY = fine-tune across it
+        if (pos.OffsetX < 0) pos.OffsetX = 0;
+        if (vertical)
+        {
+            int trayTop = hayTray && rn.Top > r.Top ? rn.Top : r.Bottom - 330;
+            int y = trayTop - Height - SeparacionPx - pos.OffsetX;
+            y = Math.Max(r.Top, Math.Min(r.Bottom - Height, y));
+            Location = new Point(r.Left + 0, y);
+        }
+        else
+        {
+            int trayLeft = hayTray && rn.Left > r.Left ? rn.Left : (!barraPrincipal && relojIzq > 0 ? relojIzq + 2 : r.Right - (barraPrincipal ? 330 : 82));
+            int minX, maxX; Limites(r, trayLeft, out minX, out maxX);
+            int x = pos.LeftSide ? minX + pos.OffsetX : maxX - pos.OffsetX;
+            if (x < minX) x = minX; if (x > maxX) x = maxX;
+            pos.OffsetX = pos.LeftSide ? x - minX : maxX - x;
+            Location = new Point(x, r.Top + (r.Bottom - r.Top - Height) / 2 + 0);
+        }
     }
 }
 
