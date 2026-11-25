@@ -11,9 +11,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-class Dispositivo { public string Nombre, Tipo, Etiqueta; public int Nivel; }
+class Dispositivo { public string Nombre, Tipo, Etiqueta, Fuente = ""; public int Nivel; public bool Cargando; }
 
-class Fila { public string Nombre, Glifo, Etiqueta; public int Mostrado, Objetivo; }
+class Fila { public string Nombre, Glifo, Etiqueta, Fuente = ""; public int Mostrado, Objetivo; public bool Cargando, Saliendo; public float Aparicion; public float Desde, Hasta; public DateTime Actualizado = DateTime.Now; }
 
 class Overlay : Form
 {
@@ -55,6 +55,10 @@ class Overlay : Form
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
     struct RECT { public int Left, Top, Right, Bottom; }
 
     static readonly Color Fondo = Color.FromArgb(28, 28, 28);
@@ -175,8 +179,8 @@ class Overlay : Form
         cierreMenu = new System.Windows.Forms.Timer { Interval = 30 }; relojes.Add(cierreMenu);
         cierreMenu.Tick += (s, e) => VigilarClicFuera();
 
-        var anim = new System.Windows.Forms.Timer { Interval = 60 }; relojes.Add(anim);
-        anim.Tick += (s, e) => { if (IsDisposed) return; foreach (var f in filas.Values) if (f.Mostrado >= 0 && f.Mostrado != f.Objetivo) { f.Mostrado += Math.Sign(f.Objetivo - f.Mostrado); Pintar(f); } };
+        var anim = new System.Windows.Forms.Timer { Interval = 33 }; relojes.Add(anim);
+        anim.Tick += (s, e) => PasoAnimacion();
         anim.Start();
 
         // revisa cada 50 ms si la barra quedo encima; solo en ese caso vuelve a subir (sin redibujar de mas)
@@ -186,7 +190,16 @@ class Overlay : Form
             if (IsDisposed || !IsHandleCreated) return;
             Duenio();
             bool tapada = !activo || BarraOculta();
-            if (tapada != oculto) { oculto = tapada; ShowWindow(Handle, tapada ? 0 : 8); if (!tapada) { Posicionar(); Dibujar(); } }   // SW_HIDE / SW_SHOWNA
+            if (tapada != oculto) { oculto = tapada; opacidadObjetivo = tapada ? 0f : 1f; if (!tapada) { ShowWindow(Handle, 8); Posicionar(); Dibujar(); } }   // fade out, then SW_HIDE / SW_SHOWNA
+            // follow the taskbar: it slides in/out (Win key, auto-hide) and games can change the screen resolution
+            RECT tbNow;
+            if (!oculto && GetWindowRect(barra, out tbNow))
+            {
+                var scr = Screen.FromHandle(barra).Bounds;
+                if (tbNow.Left != tbPrev.Left || tbNow.Top != tbPrev.Top || tbNow.Right != tbPrev.Right || tbNow.Bottom != tbPrev.Bottom || scr != scrPrev)
+                { tbPrev = tbNow; scrPrev = scr; Reajustar(); }
+                else if ((DateTime.Now - obstLeidos).TotalSeconds >= 1) { var antes = Location; Posicionar(); if (Location != antes) Dibujar(); }
+            }
             if (!oculto && BarraEncima()) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
         };
         top.Start();
@@ -195,12 +208,19 @@ class Overlay : Form
         refresco.Tick += (s, e) => Consultar();
         if (principal) { refresco.Start(); EscucharGHub(); VigilarActualizacion(); }
 
-        MouseEnter += (s, e) => { hover = true; Dibujar(); };
-        MouseLeave += (s, e) => { hover = false; Dibujar(); };
+        MouseEnter += (s, e) => { hover = true; ActualizarTooltip(); };
+        MouseLeave += (s, e) => { hover = false; tipActual = null; tip.SetToolTip(this, null); };
         Cursor = Cursors.Hand;
         MouseDown += (s, e) => { if (e.Button != MouseButtons.Left) return; presionado = true; arrastrando = false; inicioArrastre = Cursor.Position; offsetInicial = pos.OffsetX; Dibujar(); };
         MouseMove += (s, e) =>
         {
+            // tooltip: just the name of the device under the cursor
+            if (!presionado)
+            {
+                var fh = FilaEn(e.Location);
+                string nom = fh == null || fh.Nombre == "Open G HUB" ? null : fh.Nombre;
+                if (nom != tipActual) { tipActual = nom; tip.SetToolTip(this, nom); }
+            }
             if (!presionado || pos.Locked) return;
             var c = Cursor.Position;
             int d = vertical ? c.Y - inicioArrastre.Y : c.X - inicioArrastre.X;
@@ -211,7 +231,12 @@ class Overlay : Form
         MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) { if (menu.Visible) menu.Close(); else AbrirMenu(); return; }
             if (e.Button != MouseButtons.Left) return; presionado = false;
             if (arrastrando) { arrastrando = false; Cursor = Cursors.Hand; Cfg.Save(); Posicionar(); Dibujar(); return; }
-            if (menu.Visible || (DateTime.Now - menuCerrado).TotalMilliseconds < 200) { menu.Close(); Dibujar(); } else AbrirMenu(); };
+            if (menu.Visible || (DateTime.Now - menuCerrado).TotalMilliseconds < 200) { menu.Close(); Dibujar(); return; }
+            // single click opens the menu; a second click within the double-click time opens the device's app instead
+            if (clicPendiente.Enabled) { clicPendiente.Stop(); AbrirAppDe(FilaEn(PointToClient(Cursor.Position)) ?? orden.FirstOrDefault(f => !f.Saliendo)); return; }
+            clicPendiente.Start(); };
+        clicPendiente = new System.Windows.Forms.Timer { Interval = Math.Max(150, SystemInformation.DoubleClickTime - 100) }; relojes.Add(clicPendiente);
+        clicPendiente.Tick += (s, e) => { clicPendiente.Stop(); AbrirMenu(); };
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => { if (IsHandleCreated) BeginInvoke(new Action(Dibujar)); };
         Shown += (s, e) => { Duenio(); if (principal) Consultar(); else if (todas[0].ultimos.Count > 0) Mostrar(new List<Dispositivo>(todas[0].ultimos)); };
     }
@@ -224,6 +249,7 @@ class Overlay : Form
     protected override bool ShowWithoutActivation { get { return true; } }
 
     bool oculto, activo = true;
+    RECT tbPrev; Rectangle scrPrev;
     readonly List<System.Windows.Forms.Timer> relojes = new List<System.Windows.Forms.Timer>();
     protected override void OnFormClosed(FormClosedEventArgs e) { foreach (var t in relojes) { t.Stop(); t.Dispose(); } base.OnFormClosed(e); }
 
@@ -305,7 +331,7 @@ class Overlay : Form
                 if (SetupDiGetDevicePropertyW(set, ref d, ref kNom, out t, buf, (uint)buf.Length, out req, 0) || SetupDiGetDevicePropertyW(set, ref d, ref kDesc, out t, buf, (uint)buf.Length, out req, 0))
                     nombre = Encoding.Unicode.GetString(buf, 0, (int)Math.Max(0, req - 2));
                 if (string.IsNullOrEmpty(nombre) || res.Any(x => x.Nombre == nombre)) continue;
-                res.Add(new Dispositivo { Nombre = nombre, Tipo = "", Nivel = nivel });
+                res.Add(new Dispositivo { Nombre = nombre, Tipo = "", Nivel = nivel, Fuente = "bt" });
             }
         }
         finally { SetupDiDestroyDeviceInfoList(set); }
@@ -323,7 +349,7 @@ class Overlay : Form
             XBat b;
             if (XInputGetBatteryInformation(i, 0, out b) != 0) continue;
             if (b.Tipo == 0 || b.Tipo == 1 || b.Nivel > 3) continue;   // desconectado o con cable
-            res.Add(new Dispositivo { Nombre = "Xbox Controller" + (i > 0 ? " " + (i + 1) : ""), Tipo = "GAMEPAD", Nivel = niv[b.Nivel], Etiqueta = et[b.Nivel] });
+            res.Add(new Dispositivo { Nombre = "Xbox Controller" + (i > 0 ? " " + (i + 1) : ""), Tipo = "GAMEPAD", Nivel = niv[b.Nivel], Etiqueta = et[b.Nivel], Fuente = "xbox" });
         }
         return res;
     }
@@ -420,7 +446,7 @@ class Overlay : Form
                 var b = Obj(Pedir(ws, js, "/battery/" + d["id"] + "/state"), "payload");
                 if (b == null || !b.ContainsKey("percentage") || b["percentage"] == null) continue;
                 string nombre = Str(d, "extendedDisplayName") ?? Str(d, "displayName") ?? "Device";
-                res.Add(new Dispositivo { Nombre = nombre, Tipo = Str(d, "deviceType") ?? "", Nivel = Convert.ToInt32(b["percentage"]) });
+                res.Add(new Dispositivo { Nombre = nombre, Tipo = Str(d, "deviceType") ?? "", Nivel = Convert.ToInt32(b["percentage"]), Fuente = "ghub", Cargando = b.ContainsKey("charging") && b["charging"] is bool && (bool)b["charging"] });
             }
         }
         return res;
@@ -487,38 +513,167 @@ class Overlay : Form
         return baseC;
     }
 
+    readonly Dictionary<string, bool> avisadoLleno = new Dictionary<string, bool>();
+
     void Mostrar(List<Dispositivo> datos)
     {
         ultimos = new List<Dispositivo>(datos);
         datos = datos.Where(d => !pos.Hidden.Contains(d.Nombre)).ToList();
         if (datos.Count == 0) datos.Add(new Dispositivo { Nombre = "Open G HUB", Tipo = "", Nivel = -1 });
-        foreach (var n in filas.Keys.ToList())
-            if (!datos.Any(d => d.Nombre == n)) { orden.Remove(filas[n]); filas.Remove(n); }
+        // devices that went away slide out instead of vanishing
+        foreach (var f in orden) if (!datos.Any(d => d.Nombre == f.Nombre)) f.Saliendo = true;
         foreach (var d in datos)
         {
             Fila f;
             if (!filas.TryGetValue(d.Nombre, out f))
             {
-                f = new Fila { Nombre = d.Nombre, Glifo = Glifo(d), Mostrado = d.Nivel, Objetivo = d.Nivel };
+                f = new Fila { Nombre = d.Nombre, Glifo = Glifo(d), Mostrado = d.Nivel, Objetivo = d.Nivel, Aparicion = pos.Animate && primeraCarga ? 0f : 1f };
                 filas[d.Nombre] = f; orden.Add(f);
             }
-            f.Objetivo = d.Nivel; f.Etiqueta = d.Etiqueta;
+            f.Saliendo = false;
+            if (f.Objetivo != d.Nivel || f.Cargando != d.Cargando) f.Actualizado = DateTime.Now;
+            f.Objetivo = d.Nivel; f.Etiqueta = d.Etiqueta; f.Cargando = d.Cargando; f.Fuente = d.Fuente;
             if (d.Nivel < 0 || f.Mostrado < 0 || d.Etiqueta != null || !pos.Animate) f.Mostrado = d.Nivel;
 
             bool ya; avisado.TryGetValue(d.Nombre, out ya);
-            if (principal && Cfg.Notifications && d.Nivel >= 0 && d.Nivel <= UmbralAviso && !ya)
+            if (principal && Cfg.Notifications && d.Nivel >= 0 && d.Nivel <= UmbralAviso && !d.Cargando && !ya)
             {
                 aviso.Visible = true;
                 aviso.ShowBalloonTip(8000, "Low battery", d.Nombre + (d.Etiqueta != null ? " battery is " + d.Etiqueta.ToLower() : " is at " + d.Nivel + "%") + ". Time to charge it!", ToolTipIcon.Warning);
                 avisado[d.Nombre] = true;
             }
             else if (d.Nivel > UmbralAviso + 10) avisado[d.Nombre] = false;
+
+            bool lleno; avisadoLleno.TryGetValue(d.Nombre, out lleno);
+            if (principal && Cfg.Notifications && d.Cargando && d.Nivel >= 100 && !lleno)
+            {
+                aviso.Visible = true;
+                aviso.ShowBalloonTip(8000, "Fully charged", d.Nombre + " is fully charged. You can unplug it.", ToolTipIcon.Info);
+                avisadoLleno[d.Nombre] = true;
+            }
+            else if (!d.Cargando || d.Nivel < 95) avisadoLleno[d.Nombre] = false;
         }
-        tip.SetToolTip(this, string.Join("\n", orden.Select(f => f.Nombre + ": " + (f.Etiqueta ?? (f.Objetivo < 0 ? "--" : f.Objetivo + "%")))));
+        primeraCarga = true;
+        ActualizarTooltip();
         Reajustar();
+    }
+    bool primeraCarga;
+
+    static string NombreFuente(string f)
+    {
+        switch (f) { case "ghub": return "Logitech G HUB"; case "icue": return "Corsair iCUE"; case "bt": return "Bluetooth"; case "xbox": return "Xbox Wireless"; case "hyperx": return "HyperX (USB)"; default: return ""; }
+    }
+
+    static string Hace(DateTime t)
+    {
+        var d = DateTime.Now - t;
+        if (d.TotalSeconds < 60) return "just now";
+        if (d.TotalMinutes < 60) return (int)d.TotalMinutes + " min ago";
+        return (int)d.TotalHours + " h ago";
+    }
+
+    void ActualizarTooltip()
+    {
+        if (true) return;
+        var lineas = orden.Where(f => !f.Saliendo).Select(f =>
+        {
+            string nivel = f.Etiqueta ?? (f.Objetivo < 0 ? "--" : f.Objetivo + "%");
+            string extra = f.Cargando ? (f.Objetivo >= 100 ? "  ·  fully charged" : "  ·  charging") : "";
+            string fuente = NombreFuente(f.Fuente);
+            return f.Nombre + "  —  " + nivel + extra + (fuente != "" ? "\n      via " + fuente + "  ·  changed " + Hace(f.Actualizado) : "");
+        });
+        // tooltip removed on request: the readout itself shows what matters
     }
 
     void Pintar(Fila f) { Reajustar(); }
+
+    System.Windows.Forms.Timer clicPendiente;
+    string tipActual;
+
+    Fila FilaEn(Point p)
+    {
+        float v = vertical ? p.Y : p.X;
+        return orden.FirstOrDefault(f => !f.Saliendo && v >= f.Desde - 6 && v <= f.Hasta + 2);
+    }
+
+    // open the manufacturer's app (or the Windows settings page) for a device
+    static void AbrirAppDe(Fila f)
+    {
+        if (f == null) return;
+        string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var candidatos = new List<string>();
+        switch (f.Fuente)
+        {
+            case "ghub": candidatos.Add(System.IO.Path.Combine(pf, @"LGHUB\lghub.exe")); break;
+            case "icue":
+                try { foreach (var d in System.IO.Directory.GetDirectories(System.IO.Path.Combine(pf, "Corsair"))) candidatos.Add(System.IO.Path.Combine(d, "iCUE.exe")); } catch { }
+                break;
+            case "xbox": candidatos.Add("ms-settings:devices"); break;
+            default: candidatos.Add("ms-settings:bluetooth"); break;
+        }
+        if (f.Nombre == "Open G HUB") candidatos.Insert(0, System.IO.Path.Combine(pf, @"LGHUB\lghub.exe"));
+        foreach (var c in candidatos)
+            try
+            {
+                if (!c.StartsWith("ms-settings:") && !System.IO.File.Exists(c)) continue;
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(c) { UseShellExecute = true });
+                return;
+            }
+            catch { }
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:bluetooth") { UseShellExecute = true }); } catch { }
+    }
+
+    // ---- animations ----
+    float opacidad = 0f, opacidadObjetivo = 1f, hoverT; double fase; DateTime ultimoPaso = DateTime.Now;
+    static float Suave(float t) { t = Math.Max(0, Math.Min(1, t)); return t * t * (3 - 2 * t); }   // smoothstep
+    bool pos_LowPulse(Fila f) { return pos.Animate && pos.ColorByLevel && !f.Cargando && f.Mostrado >= 0 && f.Etiqueta == null && f.Mostrado <= UmbralAviso; }
+
+    void PasoAnimacion()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        bool animar = pos.Animate;
+        bool cambio = false, tamano = false;
+        float dt = 0.033f;
+        // fade in/out
+        float objO = opacidadObjetivo;
+        if (Math.Abs(opacidad - objO) > 0.001f)
+        {
+            opacidad = animar ? (opacidad < objO ? Math.Min(objO, opacidad + dt / 0.18f) : Math.Max(objO, opacidad - dt / 0.18f)) : objO;
+            cambio = true;
+            if (opacidad <= 0.001f && objO == 0f) ShowWindow(Handle, 0);
+        }
+        // hover highlight
+        float objH = hover ? 1f : 0f;
+        if (Math.Abs(hoverT - objH) > 0.001f) { hoverT = animar ? (hoverT < objH ? Math.Min(1, hoverT + dt / 0.12f) : Math.Max(0, hoverT - dt / 0.18f)) : objH; cambio = true; }
+        // rows entering / leaving
+        foreach (var f in orden.ToList())
+        {
+            float obj = f.Saliendo ? 0f : 1f;
+            if (Math.Abs(f.Aparicion - obj) > 0.001f)
+            {
+                f.Aparicion = animar ? (f.Aparicion < obj ? Math.Min(1, f.Aparicion + dt / 0.28f) : Math.Max(0, f.Aparicion - dt / 0.22f)) : obj;
+                tamano = true;
+            }
+            if (f.Saliendo && f.Aparicion <= 0.001f) { orden.Remove(f); filas.Remove(f.Nombre); tamano = true; }
+        }
+        // counting numbers (about 16 steps per second)
+        if ((DateTime.Now - ultimoPaso).TotalMilliseconds >= 60)
+        {
+            ultimoPaso = DateTime.Now;
+            foreach (var f in orden)
+                if (f.Mostrado >= 0 && f.Mostrado != f.Objetivo)
+                {
+                    int antes = TextoDe(f).Length;
+                    f.Mostrado += Math.Sign(f.Objetivo - f.Mostrado);
+                    if (TextoDe(f).Length != antes) tamano = true; else cambio = true;
+                }
+        }
+        // low-battery pulse
+        if (orden.Any(pos_LowPulse)) { fase += dt * Math.PI * 2 / 1.6; cambio = true; }
+
+        if (tamano) Reajustar();
+        else if (cambio) Dibujar();
+    }
 
     // ---- dibujo: cada simbolo y numero se centra por su contorno real ----
     float TamIcono { get { return pos.IconSize; } } float TamTexto { get { return pos.TextSize; } } float EspacioEntre { get { return pos.Spacing; } }
@@ -535,7 +690,12 @@ class Overlay : Form
     IEnumerable<Tuple<string, string, float, float>> Partes(Fila f)
     {
         if (pos.ShowIcons) yield return Tuple.Create(f.Glifo, fuenteIconos, TamIcono, EspacioIconoTexto);
-        yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre);
+        if (f.Cargando && f.Etiqueta == null && f.Mostrado >= 0)
+        {
+            yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, 3f);
+            yield return Tuple.Create("\uE945", fuenteIconos, TamTexto * 0.8f, EspacioEntre);   // lightning bolt
+        }
+        else yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre);
     }
 
     // horizontal taskbar: total width; vertical taskbar: total height (icon above number, stacked)
@@ -543,12 +703,16 @@ class Overlay : Form
     {
         float w = 0;
         foreach (var f in orden)
+        {
+            float wf = 0;
             foreach (var par in Partes(f))
                 using (var p = Ruta(par.Item1, par.Item2, par.Item3))
                 {
                     var b = p.GetBounds();
-                    w += (vertical ? b.Height + (par.Item4 == EspacioIconoTexto ? 5 : 14) : b.Width + par.Item4);
+                    wf += (vertical ? b.Height + (par.Item4 == EspacioIconoTexto ? 5 : par.Item4 == 3f ? 3 : 14) : b.Width + par.Item4);
                 }
+            w += wf * Suave(f.Aparicion);
+        }
         return Math.Max(1, w - (vertical ? 14 : EspacioEntre) + PadIzq + PadDer);
     }
 
@@ -561,14 +725,23 @@ class Overlay : Form
             {
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                 // fondo casi invisible (alfa 1) para que toda la zona reciba clics; al pasar el mouse, resaltado tipo boton
-                var fondo = (presionado || abierto) ? Color.FromArgb(18, 255, 255, 255) : hover ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(1, 0, 0, 0);
+                int a = (presionado || abierto) ? 18 : (int)Math.Round(1 + 27 * Suave(hoverT));
+                var tinte = ColorBarra() == Color.Black ? 0 : 255;
+                var fondo = Color.FromArgb(Math.Max(1, a), tinte, tinte, tinte);
                 using (var br = new SolidBrush(fondo))
                 using (var path = Redondeado(vertical ? new RectangleF(4, 0, Width - 9, Height - 1) : new RectangleF(0, 4, Width - 1, Height - 9), 5))
                     g.FillPath(br, path);
                 float pos = PadIzq, cx = Width / 2f, cy = Height / 2f;
                 foreach (var f in orden)
-                using (var br = new SolidBrush(ColorNivel(f.Mostrado)))
                 {
+                    float ap = Suave(f.Aparicion);
+                    var c = ColorNivel(f.Mostrado);
+                    float alfa = ap;
+                    if (pos_LowPulse(f)) alfa *= 0.55f + 0.45f * (float)(0.5 + 0.5 * Math.Cos(fase));
+                    using (var br = new SolidBrush(Color.FromArgb((int)(c.A * alfa), c)))
+                    {
+                    f.Desde = pos;
+                    float escala = ap, inicio = pos;
                     foreach (var par in Partes(f))
                     using (var p = Ruta(par.Item1, par.Item2, par.Item3))
                     {
@@ -577,20 +750,29 @@ class Overlay : Form
                         if (vertical)
                         {
                             m.Translate((float)Math.Round(cx - bb.Width / 2f) - bb.Left, pos - bb.Top);
-                            pos += bb.Height + (par.Item4 == EspacioIconoTexto ? 5 : 14);
+                            pos += (bb.Height + (par.Item4 == EspacioIconoTexto ? 5 : par.Item4 == 3f ? 3 : 14)) * escala;
                         }
                         else
                         {
                             m.Translate(pos - bb.Left, (float)Math.Round(cy - bb.Height / 2f) - bb.Top);
-                            pos += bb.Width + par.Item4;
+                            pos += (bb.Width + par.Item4) * escala;
+                        }
+                        if (escala < 0.999f)   // entering/leaving: grow from the row's center
+                        {
+                            var cen = vertical ? new PointF(cx, inicio) : new PointF(inicio, cy);
+                            m.Translate(-cen.X, -cen.Y, System.Drawing.Drawing2D.MatrixOrder.Append);
+                            m.Scale(0.6f + 0.4f * escala, 0.6f + 0.4f * escala, System.Drawing.Drawing2D.MatrixOrder.Append);
+                            m.Translate(cen.X, cen.Y, System.Drawing.Drawing2D.MatrixOrder.Append);
                         }
                         p.Transform(m); g.FillPath(br, p);
+                    }
+                    f.Hasta = pos;
                     }
                 }
             }
             IntPtr sdc = GetDC(IntPtr.Zero), mdc = CreateCompatibleDC(sdc), hb = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(mdc, hb);
             var sz = new SIZE { cx = Width, cy = Height }; var ps = new POINT(); var pt = new POINT { x = Left, y = Top };
-            var bl = new BLEND { op = 0, flags = 0, alpha = 255, format = 1 };
+            var bl = new BLEND { op = 0, flags = 0, alpha = (byte)Math.Round(255 * Suave(opacidad)), format = 1 };
             UpdateLayeredWindow(Handle, sdc, ref pt, ref sz, mdc, ref ps, 0, ref bl, 2);
             SelectObject(mdc, old); DeleteObject(hb); DeleteDC(mdc); ReleaseDC(IntPtr.Zero, sdc);
         }
@@ -658,9 +840,45 @@ class Overlay : Form
     // Allowed horizontal range: always keep a 25 px gap (the default one) from the tray icons,
     // the pinned app buttons and the screen edge. App buttons are found through UI Automation.
     const int Margen = 25;
-    int appsIzq = -1, appsDer = -1, widgetsDer = -1, relojIzq = -1; DateTime appsLeidos; bool leyendoApps;
+    const int Nada = int.MinValue;
+    int appsIzq = Nada, appsDer = Nada, widgetsDer = Nada, relojIzq = Nada; DateTime appsLeidos; bool leyendoApps;
+    // other things sitting on this taskbar (e.g. TrafficMonitor, other tray widgets): windows of other
+    // processes overlapping the taskbar, plus unknown child windows of the taskbar itself
+    List<RECT> obstaculos = new List<RECT>(); DateTime obstLeidos; int trayPrev = Nada;
+    static readonly HashSet<string> ClasesBarra = new HashSet<string> { "Start", "TrayNotifyWnd", "ReBarWindow32", "MSTaskSwWClass", "MSTaskListWClass", "TrayShowDesktopButtonWClass",
+        "Windows.UI.Composition.DesktopWindowContentBridge", "Windows.UI.Input.InputSite.WindowClass", "SysPager", "ToolbarWindow32", "TrayClockWClass", "TrayButton", "TrayInputIndicatorWClass",
+        "TrayDummySearchControl", "Button", "WorkerW" };
+
+    void LeerObstaculos(RECT r)
+    {
+        obstLeidos = DateTime.Now;
+        var res = new List<RECT>();
+        uint pidYo = (uint)System.Diagnostics.Process.GetCurrentProcess().Id, pidExp; GetWindowThreadProcessId(barra, out pidExp);
+        var propias = new HashSet<IntPtr>(todas.Where(o => o.IsHandleCreated).Select(o => o.Handle));
+        EnumProc revisar = (h, l) =>
+        {
+            if (propias.Contains(h) || !IsWindowVisible(h)) return true;
+            RECT w; if (!GetWindowRect(h, out w)) return true;
+            int ancho = w.Right - w.Left, alto = w.Bottom - w.Top;
+            if (ancho < 8 || alto < 8 || ancho > (r.Right - r.Left) / 2) return true;            // skip tiny and huge windows
+            if (w.Top < r.Top - 2 || w.Bottom > r.Bottom + 2) return true;                          // must sit inside the taskbar band
+            if (w.Right <= r.Left || w.Left >= r.Right) return true;
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (pid == pidYo) return true;
+            if (pid == pidExp && GetParent(h) != barra) return true;                                 // explorer's own popups
+            var cls = new StringBuilder(128); GetClassName(h, cls, 128);
+            if (pid == pidExp && ClasesBarra.Contains(cls.ToString())) return true;               // regular taskbar parts
+            res.Add(w);
+            return true;
+        };
+        try { EnumWindows(revisar, IntPtr.Zero); EnumChildWindows(barra, revisar, IntPtr.Zero); } catch { }
+        GC.KeepAlive(revisar);
+        obstaculos = res;
+    }
+
     void Limites(RECT r, int trayLeft, out int minX, out int maxX)
     {
+        if ((DateTime.Now - obstLeidos).TotalSeconds >= 1 || trayLeft != trayPrev) { trayPrev = trayLeft; LeerObstaculos(r); }
         // UI Automation is slow: refresh the cached button positions in the background
         if (!leyendoApps && (DateTime.Now - appsLeidos).TotalSeconds > (arrastrando ? 2 : 20))
         {
@@ -670,13 +888,22 @@ class Overlay : Form
         }
         if (pos.LeftSide)
         {
-            minX = (widgetsDer > 0 ? widgetsDer : r.Left) + Margen;
-            maxX = (appsIzq > 0 ? appsIzq : (r.Left + r.Right) / 2) - Margen - Width;
+            minX = (widgetsDer != Nada ? widgetsDer : r.Left) + Margen;
+            maxX = (appsIzq != Nada ? appsIzq : (r.Left + r.Right) / 2) - Margen - Width;
+            foreach (var o in obstaculos)
+            {
+                int limiteApps = appsIzq != Nada ? appsIzq : (r.Left + r.Right) / 2;
+                if (o.Right <= limiteApps && o.Right > r.Left) minX = Math.Max(minX, o.Right + Margen);
+            }
         }
         else
         {
             maxX = trayLeft - Width - SeparacionPx;
-            minX = appsDer > 0 ? appsDer + Margen : r.Left + Margen;
+            // keep the default gap from anything else sitting between the app icons and the tray
+            int izqApps = appsDer != Nada ? appsDer : r.Left;
+            foreach (var o in obstaculos)
+                if (o.Left > izqApps && o.Left < trayLeft) maxX = Math.Min(maxX, o.Left - Margen - Width);
+            minX = appsDer != Nada ? appsDer + Margen : r.Left + Margen;
         }
         if (maxX < minX) maxX = minX;
     }
@@ -712,7 +939,7 @@ class Overlay : Form
             int i0 = botones.FindIndex(b => b.Item3 == "StartButton"); if (i0 < 0) i0 = 0;
             int izq = botones[i0].Item1, der = botones[i0].Item2;
             for (int i = i0 + 1; i < botones.Count && botones[i].Item1 - der < 60; i++) der = Math.Max(der, botones[i].Item2);
-            int wd = -1; for (int i = 0; i < i0; i++) if (botones[i].Item2 < izq - 20 && botones[i].Item2 < r.Left + 400) wd = Math.Max(wd, botones[i].Item2);   // e.g. the Widgets button on the far left
+            int wd = Nada; for (int i = 0; i < i0; i++) if (botones[i].Item2 < izq - 20 && botones[i].Item2 < r.Left + 400) wd = Math.Max(wd, botones[i].Item2);   // e.g. the Widgets button on the far left
             appsIzq = izq; appsDer = der; widgetsDer = wd;
             // secondary taskbars: the clock is the right-most group of buttons
             int j = botones.Count - 1;
@@ -743,7 +970,7 @@ class Overlay : Form
         }
         else
         {
-            int trayLeft = hayTray && rn.Left > r.Left ? rn.Left : (!barraPrincipal && relojIzq > 0 ? relojIzq + 2 : r.Right - (barraPrincipal ? 330 : 82));
+            int trayLeft = hayTray && rn.Left > r.Left ? rn.Left : (!barraPrincipal && relojIzq != Nada ? relojIzq - 4 : r.Right - (barraPrincipal ? 330 : 82));
             int minX, maxX; Limites(r, trayLeft, out minX, out maxX);
             int x = pos.LeftSide ? minX + pos.OffsetX : maxX - pos.OffsetX;
             if (x < minX) x = minX; if (x > maxX) x = maxX;

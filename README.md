@@ -20,7 +20,10 @@ Shows the battery level of your wireless peripherals right on the Windows taskba
 
 - Device-type icon (mouse, headset, keyboard, controller) and percentage, vertically centered on the taskbar, using the same text color as the taskbar clock (follows Windows light/dark mode).
 - Turns red and shows a notification below 20%.
-- Numbers count smoothly when the level changes.
+- Smooth animations: fades in/out, hover highlight, devices slide in/out when they connect or disconnect, numbers count to the new level, and a gentle pulse when a battery is low.
+- Shows a ⚡ next to the level while a device is charging, and notifies you when it's fully charged.
+- Hover a device to see its name; double-click it to open G HUB / iCUE (or Bluetooth settings).
+- Moves out of the way of other taskbar widgets and tray changes automatically.
 - Behaves like a taskbar button: it highlights on hover and a click opens the menu (*Refresh now*, *Settings…*, *Start with Windows*, *Exit*).
 - Starts with Windows. Uses ~20 MB of RAM and ~0% CPU.
 

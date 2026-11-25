@@ -49,7 +49,7 @@ static class Corsair
                     CorsairFreeProperty(prop);
                     if (nivel < 0 || nivel > 100) continue;
                     string t = (tipo & 0x8) != 0 ? "HEADSET" : (tipo & 0x2) != 0 ? "MOUSE" : (tipo & 0x1) != 0 ? "KEYBOARD" : (tipo & 0x1000) != 0 ? "GAMEPAD" : "";
-                    res.Add(new Dispositivo { Nombre = "Corsair " + modelo, Tipo = t, Nivel = nivel });
+                    res.Add(new Dispositivo { Nombre = "Corsair " + modelo, Tipo = t, Nivel = nivel, Fuente = "icue" });
                 }
             }
             finally { Marshal.FreeHGlobal(buf); Marshal.FreeHGlobal(prop); }
@@ -107,7 +107,7 @@ static class HyperX
                 foreach (var id in Ids) if (r.Contains(string.Format("vid_{0:x4}&pid_{1:x4}", id[0], id[1]))) coincide = true;
                 if (!coincide) continue;
                 int nivel = Consultar(ruta);
-                if (nivel >= 0) { res.Add(new Dispositivo { Nombre = "HyperX Cloud II Wireless", Tipo = "HEADSET", Nivel = nivel }); break; }
+                if (nivel >= 0) { res.Add(new Dispositivo { Nombre = "HyperX Cloud II Wireless", Tipo = "HEADSET", Nivel = nivel, Fuente = "hyperx" }); break; }
             }
         }
         finally { SetupDiDestroyDeviceInfoList(set); }
