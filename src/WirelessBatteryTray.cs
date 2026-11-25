@@ -66,7 +66,8 @@ class Overlay : Form
     readonly Dictionary<string, Fila> filas = new Dictionary<string, Fila>();
     readonly Dictionary<string, bool> avisado = new Dictionary<string, bool>();
     readonly ToolTip tip = new ToolTip();
-    readonly NotifyIcon aviso = new NotifyIcon { Icon = SystemIcons.Warning };
+    readonly NotifyIcon aviso = new NotifyIcon { Icon = IconoApp(), Text = "Wireless Battery Tray" };
+    static Icon IconoApp() { try { return Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { return SystemIcons.Application; } }
     readonly ContextMenuStrip menu = new ContextMenuStrip();
     readonly string fuenteIconos;
     bool consultando;
@@ -221,6 +222,13 @@ class Overlay : Form
 
         refresco = new System.Windows.Forms.Timer { Interval = Cfg.RefreshSeconds * 1000 }; relojes.Add(refresco);
         refresco.Tick += (s, e) => Consultar();
+        if (principal)
+        {
+            // icon in the system tray (behind the ^ arrow by default): right-click = same menu as the button, double-click = Settings
+            aviso.ContextMenuStrip = menu;
+            aviso.DoubleClick += (s, e) => AbrirAjustes();
+            aviso.Visible = true;
+        }
         if (principal) { refresco.Start(); EscucharGHub(); VigilarActualizacion(); }
 
         MouseEnter += (s, e) => { hover = true; ActualizarTooltip(); };
@@ -710,12 +718,7 @@ class Overlay : Form
     IEnumerable<Tuple<string, string, float, float>> Partes(Fila f)
     {
         if (pos.ShowIcons) yield return Tuple.Create(f.Glifo, fuenteIconos, TamIcono, EspacioIconoTexto);
-        if (f.Cargando && f.Etiqueta == null && f.Mostrado >= 0)
-        {
-            yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, 3f);
-            yield return Tuple.Create("\uE945", fuenteIconos, TamTexto * 0.8f, EspacioEntre);   // lightning bolt
-        }
-        else yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre);
+        yield return Tuple.Create(TextoDe(f), "Segoe UI", TamTexto, EspacioEntre);
     }
 
     // horizontal taskbar: total width; vertical taskbar: total height (icon above number, stacked)

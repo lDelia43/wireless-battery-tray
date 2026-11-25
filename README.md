@@ -21,7 +21,8 @@ Shows the battery level of your wireless peripherals right on the Windows taskba
 - Device-type icon (mouse, headset, keyboard, controller) and percentage, vertically centered on the taskbar, using the same text color as the taskbar clock (follows Windows light/dark mode).
 - Turns red and shows a notification below 20%.
 - Smooth animations: fades in/out, hover highlight, devices slide in/out when they connect or disconnect, numbers count to the new level, and a gentle pulse when a battery is low.
-- Shows a ⚡ next to the level while a device is charging, and notifies you when it's fully charged.
+- Notifies you when a charging device is full.
+- Tray icon (behind the `^` arrow): right-click for the same menu, double-click for Settings.
 - Hover a device to see its name; double-click it to open G HUB / iCUE (or Bluetooth settings).
 - Moves out of the way of other taskbar widgets and tray changes automatically.
 - Behaves like a taskbar button: it highlights on hover and a click opens the menu (*Refresh now*, *Settings…*, *Start with Windows*, *Exit*).
@@ -57,7 +58,7 @@ Corsair support uses the official iCUE SDK, which is not redistributed here. To 
 Requires .NET Framework 4.5+ (included with Windows 10/11) and [NSIS](https://nsis.sourceforge.io/) for the installer.
 
 ```bat
-csc /target:winexe /platform:x64 /out:installer\WirelessBatteryTray-1.0.0.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll src\*.cs
+csc /target:winexe /platform:x64 /win32icon:assets\app.ico /out:installer\WirelessBatteryTray-1.0.0.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll src\*.cs
 makensis /DVERSION=1.0.0 installer\setup.nsi
 ```
 

@@ -3,6 +3,8 @@ Name "Wireless Battery Tray"
 OutFile "WirelessBatteryTray-Setup.exe"
 InstallDir "$LOCALAPPDATA\WirelessBatteryTray"
 RequestExecutionLevel user
+Icon "app.ico"
+UninstallIcon "app.ico"
 !ifndef VERSION
   !define VERSION "dev"
 !endif
