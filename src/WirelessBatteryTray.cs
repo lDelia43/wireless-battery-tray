@@ -93,10 +93,18 @@ class Overlay : Form
         }
     }
 
+    // errors are written to %LOCALAPPDATA%\\WirelessBatteryTray\\errors.log
+    static void Registrar(Exception ex)
+    {
+        string txt = DateTime.Now + " " + Version + "\n" + ex + "\n\n";
+        try { var d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WirelessBatteryTray"); System.IO.Directory.CreateDirectory(d); System.IO.File.AppendAllText(System.IO.Path.Combine(d, "errors.log"), txt); } catch { }
+    }
+
     static bool falloMostrado;
     static void Fallo(Exception ex)
     {
         // show the error only once, then quit cleanly (a repeating timer could otherwise pop it up again and again)
+        Registrar(ex);
         if (falloMostrado) return; falloMostrado = true;
         try { MessageBox.Show("Wireless Battery Tray " + Version + " crashed:\n\n" + ex, "Wireless Battery Tray", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
         Environment.Exit(1);
@@ -174,7 +182,7 @@ class Overlay : Form
             Application.Restart();
         });
         menu.Items.Add("Exit", null, (s, e) => { aviso.Dispose(); Application.Exit(); });
-        menu.Opening += (s, e) => { inicio.Checked = Cfg.StartWithWindows; bloqueo.Text = pos.Locked ? "Unlock position" : "Lock position"; lado.Text = pos.LeftSide ? "Move to right side" : "Move to left side"; };
+        menu.Opening += (s, e) => { inicio.Checked = Cfg.StartWithWindows; bloqueo.Text = pos.Locked ? "Unlock position" : "Lock position"; lado.Text = vertical ? (pos.LeftSide ? "Move to bottom" : "Move to top") : (pos.LeftSide ? "Move to right side" : "Move to left side"); };
         menu.Closed += (s, e) => { abierto = false; menuCerrado = DateTime.Now; Dibujar(); };
         cierreMenu = new System.Windows.Forms.Timer { Interval = 30 }; relojes.Add(cierreMenu);
         cierreMenu.Tick += (s, e) => VigilarClicFuera();
@@ -188,6 +196,7 @@ class Overlay : Form
         top.Tick += (s, e) =>
         {
             if (IsDisposed || !IsHandleCreated) return;
+            try {
             Duenio();
             bool tapada = !activo || BarraOculta();
             if (tapada != oculto) { oculto = tapada; opacidadObjetivo = tapada ? 0f : 1f; if (!tapada) { ShowWindow(Handle, 8); Posicionar(); Dibujar(); } }   // fade out, then SW_HIDE / SW_SHOWNA
@@ -196,11 +205,17 @@ class Overlay : Form
             if (!oculto && GetWindowRect(barra, out tbNow))
             {
                 var scr = Screen.FromHandle(barra).Bounds;
-                if (tbNow.Left != tbPrev.Left || tbNow.Top != tbPrev.Top || tbNow.Right != tbPrev.Right || tbNow.Bottom != tbPrev.Bottom || scr != scrPrev)
-                { tbPrev = tbNow; scrPrev = scr; Reajustar(); }
+                // the tray area settles a moment after the taskbar itself moves: watch both
+                RECT trNow = new RECT(); var tn = FindWindowEx(barra, IntPtr.Zero, "TrayNotifyWnd", null);
+                if (tn != IntPtr.Zero) GetWindowRect(tn, out trNow);
+                bool barraCambio = tbNow.Left != tbPrev.Left || tbNow.Top != tbPrev.Top || tbNow.Right != tbPrev.Right || tbNow.Bottom != tbPrev.Bottom || scr != scrPrev;
+                bool trayCambio = trNow.Left != trPrev.Left || trNow.Top != trPrev.Top || trNow.Right != trPrev.Right || trNow.Bottom != trPrev.Bottom;
+                if (barraCambio || trayCambio) { tbPrev = tbNow; scrPrev = scr; trPrev = trNow; obstLeidos = DateTime.MinValue; if (barraCambio) { OlvidarApps(); reajustesPendientes = new[] { 250, 700, 1500 }.Select(ms => DateTime.Now.AddMilliseconds(ms)).ToList(); } appsLeidos = DateTime.MinValue; Reajustar(); }
+                else if (reajustesPendientes.Count > 0 && DateTime.Now >= reajustesPendientes[0]) { reajustesPendientes.RemoveAt(0); obstLeidos = DateTime.MinValue; Reajustar(); }
                 else if ((DateTime.Now - obstLeidos).TotalSeconds >= 1) { var antes = Location; Posicionar(); if (Location != antes) Dibujar(); }
             }
             if (!oculto && BarraEncima()) SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+            } catch (Exception ex) { Registrar(ex); }
         };
         top.Start();
 
@@ -211,7 +226,7 @@ class Overlay : Form
         MouseEnter += (s, e) => { hover = true; ActualizarTooltip(); };
         MouseLeave += (s, e) => { hover = false; tipActual = null; tip.SetToolTip(this, null); };
         Cursor = Cursors.Hand;
-        MouseDown += (s, e) => { if (e.Button != MouseButtons.Left) return; presionado = true; arrastrando = false; inicioArrastre = Cursor.Position; offsetInicial = pos.OffsetX; Dibujar(); };
+        MouseDown += (s, e) => { if (e.Button != MouseButtons.Left) return; presionado = true; if (!pos.Locked) appsLeidos = DateTime.MinValue; arrastrando = false; inicioArrastre = Cursor.Position; offsetInicial = pos.OffsetX; Dibujar(); };
         MouseMove += (s, e) =>
         {
             // tooltip: just the name of the device under the cursor
@@ -226,7 +241,7 @@ class Overlay : Form
             int d = vertical ? c.Y - inicioArrastre.Y : c.X - inicioArrastre.X;
             if (!arrastrando && Math.Abs(d) < 5) return;
             arrastrando = true; Cursor = vertical ? Cursors.SizeNS : Cursors.SizeWE;
-            pos.OffsetX = Math.Max(0, (pos.LeftSide && !vertical) ? offsetInicial + d : offsetInicial - d); Posicionar(); Dibujar();
+            pos.OffsetX = Math.Max(0, pos.LeftSide ? offsetInicial + d : offsetInicial - d); Posicionar(); Dibujar();
         };
         MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) { if (menu.Visible) menu.Close(); else AbrirMenu(); return; }
             if (e.Button != MouseButtons.Left) return; presionado = false;
@@ -249,7 +264,7 @@ class Overlay : Form
     protected override bool ShowWithoutActivation { get { return true; } }
 
     bool oculto, activo = true;
-    RECT tbPrev; Rectangle scrPrev;
+    RECT tbPrev, trPrev; Rectangle scrPrev; List<DateTime> reajustesPendientes = new List<DateTime>();
     readonly List<System.Windows.Forms.Timer> relojes = new List<System.Windows.Forms.Timer>();
     protected override void OnFormClosed(FormClosedEventArgs e) { foreach (var t in relojes) { t.Stop(); t.Dispose(); } base.OnFormClosed(e); }
 
@@ -630,6 +645,11 @@ class Overlay : Form
 
     void PasoAnimacion()
     {
+        try { PasoAnimacionInterno(); } catch (Exception ex) { Registrar(ex); }
+    }
+
+    void PasoAnimacionInterno()
+    {
         if (IsDisposed || !IsHandleCreated) return;
         bool animar = pos.Animate;
         bool cambio = false, tamano = false;
@@ -717,6 +737,11 @@ class Overlay : Form
     }
 
     void Dibujar()
+    {
+        try { DibujarInterno(); } catch (Exception ex) { Registrar(ex); }
+    }
+
+    void DibujarInterno()
     {
         if (!IsHandleCreated || Width < 2) return;
         using (var bmp = new Bitmap(Width, Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
@@ -829,6 +854,11 @@ class Overlay : Form
     }
     void Reajustar()
     {
+        try { ReajustarInterno(); } catch (Exception ex) { Registrar(ex); }
+    }
+
+    void ReajustarInterno()
+    {
         RECT r; LeerBarra(out r);
         int largo = (int)Math.Ceiling(LargoTotal());
         var nuevo = vertical ? new Size(anchoBarra, largo) : new Size(largo, altoBarra);
@@ -853,12 +883,14 @@ class Overlay : Form
     {
         obstLeidos = DateTime.Now;
         var res = new List<RECT>();
+        r = Eje(r);
         uint pidYo = (uint)System.Diagnostics.Process.GetCurrentProcess().Id, pidExp; GetWindowThreadProcessId(barra, out pidExp);
         var propias = new HashSet<IntPtr>(todas.Where(o => o.IsHandleCreated).Select(o => o.Handle));
         EnumProc revisar = (h, l) =>
         {
             if (propias.Contains(h) || !IsWindowVisible(h)) return true;
             RECT w; if (!GetWindowRect(h, out w)) return true;
+            w = Eje(w);
             int ancho = w.Right - w.Left, alto = w.Bottom - w.Top;
             if (ancho < 8 || alto < 8 || ancho > (r.Right - r.Left) / 2) return true;            // skip tiny and huge windows
             if (w.Top < r.Top - 2 || w.Bottom > r.Bottom + 2) return true;                          // must sit inside the taskbar band
@@ -876,9 +908,13 @@ class Overlay : Form
         obstaculos = res;
     }
 
+    RECT Eje(RECT x) { return vertical ? new RECT { Left = x.Top, Right = x.Bottom, Top = x.Left, Bottom = x.Right } : x; }
+    int LargoVentana { get { return vertical ? Height : Width; } }
+
+    // r and trayLeft come in "taskbar axis" coordinates (X for horizontal taskbars, Y for vertical ones)
     void Limites(RECT r, int trayLeft, out int minX, out int maxX)
     {
-        if ((DateTime.Now - obstLeidos).TotalSeconds >= 1 || trayLeft != trayPrev) { trayPrev = trayLeft; LeerObstaculos(r); }
+        if ((DateTime.Now - obstLeidos).TotalSeconds >= 1 || trayLeft != trayPrev) { trayPrev = trayLeft; RECT rr0; LeerBarra(out rr0); LeerObstaculos(rr0); }
         // UI Automation is slow: refresh the cached button positions in the background
         if (!leyendoApps && (DateTime.Now - appsLeidos).TotalSeconds > (arrastrando ? 2 : 20))
         {
@@ -886,27 +922,39 @@ class Overlay : Form
             var rr = r; int tl = barraPrincipal ? trayLeft : r.Right;
             Task.Run(() => LeerApps(rr, tl)).ContinueWith(t => { leyendoApps = false; Posicionar(); Dibujar(); }, TaskScheduler.FromCurrentSynchronizationContext());
         }
+        // Windows sometimes reports app-button positions that make no sense (e.g. on vertical taskbars):
+        // ignore anything outside the taskbar or past the tray
+        int aI = appsIzq, aD = appsDer, wD = widgetsDer;
+        if (aI != Nada && (aI < r.Left || aD > trayLeft || aD <= aI)) { aI = Nada; aD = Nada; wD = Nada; }
+        if (wD != Nada && (wD < r.Left || wD > trayLeft || (aI != Nada && wD > aI))) wD = Nada;
+        bool midiendo = aI == Nada && (leyendoApps || (DateTime.Now - appsLeidos).TotalSeconds < 3);
+        int centro = (r.Left + r.Right) / 2;
         if (pos.LeftSide)
         {
-            minX = (widgetsDer != Nada ? widgetsDer : r.Left) + Margen;
-            maxX = (appsIzq != Nada ? appsIzq : (r.Left + r.Right) / 2) - Margen - Width;
+            minX = (wD != Nada ? wD : r.Left) + Margen;
+            maxX = (aI != Nada ? aI : (r.Left + r.Right) / 2) - Margen - LargoVentana;
             foreach (var o in obstaculos)
             {
-                int limiteApps = appsIzq != Nada ? appsIzq : (r.Left + r.Right) / 2;
+                int limiteApps = aI != Nada ? aI : (r.Left + r.Right) / 2;
                 if (o.Right <= limiteApps && o.Right > r.Left) minX = Math.Max(minX, o.Right + Margen);
             }
         }
         else
         {
-            maxX = trayLeft - Width - SeparacionPx;
+            maxX = trayLeft - LargoVentana - SeparacionPx;
             // keep the default gap from anything else sitting between the app icons and the tray
-            int izqApps = appsDer != Nada ? appsDer : r.Left;
+            int izqApps = aD != Nada ? aD : r.Left;
             foreach (var o in obstaculos)
-                if (o.Left > izqApps && o.Left < trayLeft) maxX = Math.Min(maxX, o.Left - Margen - Width);
-            minX = appsDer != Nada ? appsDer + Margen : r.Left + Margen;
+                if (o.Left > izqApps && o.Left < trayLeft) maxX = Math.Min(maxX, o.Left - Margen - LargoVentana);
+            minX = aD != Nada ? aD + Margen : (midiendo ? centro + 150 : r.Left + Margen);
         }
+        // never leave the taskbar
+        minX = Math.Max(minX, r.Left); maxX = Math.Min(maxX, r.Right - LargoVentana);
         if (maxX < minX) maxX = minX;
     }
+
+    // positions measured for the old taskbar layout are useless after it moves or rotates
+    void OlvidarApps() { appsIzq = Nada; appsDer = Nada; widgetsDer = Nada; relojIzq = Nada; }
 
     void LeerApps(RECT r, int trayLeft)
     {
@@ -928,7 +976,7 @@ class Overlay : Form
                 bool esTexto = prog == "ControlType.Text";
                 if (prog != "ControlType.Button" && prog != "ControlType.ListItem" && prog != "ControlType.MenuItem" && !(esTexto && !barraPrincipal)) continue;
                 object rect = cur.GetType().GetProperty("BoundingRectangle").GetValue(cur, null);
-                double l = (double)rect.GetType().GetProperty("Left").GetValue(rect, null), w = (double)rect.GetType().GetProperty("Width").GetValue(rect, null);
+                double l = (double)rect.GetType().GetProperty(vertical ? "Top" : "Left").GetValue(rect, null), w = (double)rect.GetType().GetProperty(vertical ? "Height" : "Width").GetValue(rect, null);
                 if (double.IsInfinity(l) || w <= 0 || w > 200 || l + w > trayLeft || l < r.Left) continue;
                 string id = (string)cur.GetType().GetProperty("AutomationId").GetValue(cur, null);
                 botones.Add(Tuple.Create((int)l, (int)(l + w), id ?? ""));
@@ -963,15 +1011,17 @@ class Overlay : Form
         if (pos.OffsetX < 0) pos.OffsetX = 0;
         if (vertical)
         {
-            int trayTop = hayTray && rn.Top > r.Top ? rn.Top : r.Bottom - 330;
-            int y = trayTop - Height - SeparacionPx - pos.OffsetX;
-            y = Math.Max(r.Top, Math.Min(r.Bottom - Height, y));
-            Location = new Point(r.Left + 0, y);
+            int trayTop = hayTray && rn.Top > r.Top ? rn.Top : r.Bottom - (barraPrincipal ? 330 : 82);
+            int minY, maxY; Limites(Eje(r), trayTop, out minY, out maxY);
+            int y = pos.LeftSide ? minY + pos.OffsetX : maxY - pos.OffsetX;
+            if (y < minY) y = minY; if (y > maxY) y = maxY;
+            pos.OffsetX = pos.LeftSide ? y - minY : maxY - y;
+            Location = new Point(r.Left, y);
         }
         else
         {
             int trayLeft = hayTray && rn.Left > r.Left ? rn.Left : (!barraPrincipal && relojIzq != Nada ? relojIzq - 4 : r.Right - (barraPrincipal ? 330 : 82));
-            int minX, maxX; Limites(r, trayLeft, out minX, out maxX);
+            int minX, maxX; Limites(Eje(r), trayLeft, out minX, out maxX);
             int x = pos.LeftSide ? minX + pos.OffsetX : maxX - pos.OffsetX;
             if (x < minX) x = minX; if (x > maxX) x = maxX;
             pos.OffsetX = pos.LeftSide ? x - minX : maxX - x;
