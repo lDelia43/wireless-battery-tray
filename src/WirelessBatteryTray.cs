@@ -59,6 +59,7 @@ class Overlay : Form
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr l);
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     struct RECT { public int Left, Top, Right, Bottom; }
 
     static readonly Color Fondo = Color.FromArgb(28, 28, 28);
@@ -288,6 +289,14 @@ class Overlay : Form
         if (fg == IntPtr.Zero || fg == Handle || fg == barra) return false;
         var cls = new StringBuilder(64); GetClassName(fg, cls, 64);
         string c = cls.ToString();
+        // Alt+Tab switcher and Task View (Win+Tab) hide the taskbar
+        if (c == "XamlExplorerHostIslandWindow" || c == "MultitaskingViewFrame" || c == "TaskSwitcherWnd" || c == "TaskSwitcherOverlayWnd" || c == "ForegroundStaging") return true;
+        if (c == "Windows.UI.Core.CoreWindow")
+        {
+            var titulo = new StringBuilder(128); GetWindowText(fg, titulo, 128);
+            string t = titulo.ToString();
+            if (t == "Task View" || t == "Task Switching" || t.Contains("Vista de tareas") || t.Contains("Cambio de tareas")) return true;
+        }
         if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") return false;
         RECT w; if (!GetWindowRect(fg, out w)) return false;
         return Screen.FromHandle(fg).DeviceName == Screen.FromHandle(barra).DeviceName
