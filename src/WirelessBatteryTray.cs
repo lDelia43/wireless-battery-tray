@@ -700,7 +700,7 @@ class Overlay : Form
         float objO = opacidadObjetivo;
         if (Math.Abs(opacidad - objO) > 0.001f)
         {
-            opacidad = animar ? (opacidad < objO ? Math.Min(objO, opacidad + dt / 0.18f) : Math.Max(objO, opacidad - dt / 0.18f)) : objO;
+            opacidad = objO;   // instant, like the taskbar itself (a fade looked out of sync)
             cambio = true;
             if (opacidad <= 0.001f && objO == 0f) ShowWindow(Handle, 0);
         }
