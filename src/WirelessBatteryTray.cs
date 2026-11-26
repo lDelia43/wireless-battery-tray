@@ -60,6 +60,8 @@ class Overlay : Form
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr l);
     [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
     struct RECT { public int Left, Top, Right, Bottom; }
 
     static readonly Color Fondo = Color.FromArgb(28, 28, 28);
@@ -285,6 +287,9 @@ class Overlay : Form
         int visibleAlto = Math.Min(tb.Bottom, mon.Bottom) - Math.Max(tb.Top, mon.Top), visibleAncho = Math.Min(tb.Right, mon.Right) - Math.Max(tb.Left, mon.Left);
         if (visibleAlto < 8 || visibleAncho < 8) return true;   // auto-hide taskbar slid off screen
 
+        // a full-screen window covering the taskbar, even if it isn't the active one (e.g. a game on this monitor while you use another)
+        if (TapadaPorPantallaCompleta(tb, mon)) return true;
+
         var fg = GetForegroundWindow();
         if (fg == IntPtr.Zero || fg == Handle || fg == barra) return false;
         var cls = new StringBuilder(64); GetClassName(fg, cls, 64);
@@ -301,6 +306,26 @@ class Overlay : Form
         RECT w; if (!GetWindowRect(fg, out w)) return false;
         return Screen.FromHandle(fg).DeviceName == Screen.FromHandle(barra).DeviceName
             && w.Left <= mon.Left && w.Top <= mon.Top && w.Right >= mon.Right && w.Bottom >= mon.Bottom;
+    }
+
+    bool TapadaPorPantallaCompleta(RECT tb, Rectangle mon)
+    {
+        // look at what is on top at a point of the taskbar away from this button
+        var pts = new[] { new Point(tb.Left + 3, (tb.Top + tb.Bottom) / 2), new Point((tb.Left + tb.Right) / 2, tb.Bottom - 3), new Point(tb.Right - 3, (tb.Top + tb.Bottom) / 2) };
+        foreach (var p in pts)
+        {
+            if (Bounds.Contains(p)) continue;
+            var h = WindowFromPoint(new POINT { x = p.X, y = p.Y });
+            if (h == IntPtr.Zero) continue;
+            var raiz = GetAncestor(h, 2);   // GA_ROOT
+            if (raiz == IntPtr.Zero || raiz == barra || raiz == Handle || todas.Any(o => o.IsHandleCreated && o.Handle == raiz)) return false;
+            var cls = new StringBuilder(64); GetClassName(raiz, cls, 64);
+            string c = cls.ToString();
+            if (c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd" || c == "Progman" || c == "WorkerW") return false;
+            RECT w; if (!GetWindowRect(raiz, out w)) return false;
+            return w.Left <= mon.Left && w.Top <= mon.Top && w.Right >= mon.Right && w.Bottom >= mon.Bottom;
+        }
+        return false;
     }
 
     IntPtr duenioActual = IntPtr.Zero;
